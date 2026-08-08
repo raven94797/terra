@@ -118,6 +118,39 @@ let missionStarted = false;  // 向导交付无人机后开始战斗
 let purified = 0;            // 净化的线虫数量
 const BOSS_TRIGGER = 6;      // 净化达到该数量后，天牛出现
 
+// ---------------- 向导对话 ----------------
+let dialogOpen = false;      // 对话面板是否打开
+let dialogLine = 0;          // 当前对话索引
+let dialogCooldown = 0;      // 防止按住E连点
+let talkHint = 0;            // 提示"按E交谈"闪烁计时
+let dialogTypewriter = 0;    // 打字机效果进度
+const DIALOG = {
+  intro: [                    // 初始（未领取无人机）
+    '呼……终于找到你了。我是这片松林的守林人。',
+    '你看，四周的松树正在枯黄——那是松树线虫病在作祟。',
+    '线虫钻入树干啃食，还有天牛在帮着传播它们。',
+    '我们得趁灾难扩大前阻止它。我能为你做点什么吗？',
+  ],
+  ready: [                    // 已领取无人机，正在净化线虫
+    '很好！你已经拿到无人机了。',
+    '按住鼠标左键，无人机就会向准星方向喷洒益生菌。',
+    '地面发光的绿色菌落可以补充益生菌能量。',
+    '等净化足够多的线虫，真正的幕后黑手——松墨天牛就会出现。',
+  ],
+  boss: [                     // 天牛出现
+    '小心！那就是传播线虫的松墨天牛！',
+    '它会不断释放小线虫，别被围住了。',
+    '集中益生菌火力，命中它的身体削弱它！',
+    '半血之后它会进入狂暴，务必走位躲开！',
+  ],
+  victory: [                  // 胜利后
+    '太好了……松林终于得救了！',
+    '你不仅消灭了线虫，还击败了松墨天牛。',
+    '这片林子会慢慢恢复生机。谢谢你，守卫者。',
+    '不过也许……远处还有别的威胁。保持警惕。',
+  ],
+};
+
 // ---------------- 资源加载 ----------------
 function loadImage(src) {
   // 通过 fetch + blob URL 加载图片，保证与页面同源，
@@ -515,6 +548,62 @@ function updateGuide(dt) {
   guide.physics();
   if (Math.abs(guide.vx) > 0.3 && guide.onGround) guide.walkPhase += dt * 7;
   else guide.walkPhase *= 0.8;
+}
+
+// ---------------- 向导对话 ----------------
+function guideDialogKey() {
+  if (victory) return 'victory';
+  if (bossActive) return 'boss';
+  if (missionStarted) return 'ready';
+  return 'intro';
+}
+
+function guideNearPlayer() {
+  const dx = guide.cx - player.cx;
+  const dy = (guide.y + guide.h / 2) - (player.y + player.h / 2);
+  return dx * dx + dy * dy < TILE * TILE * 4;
+}
+
+function updateDialog(dt) {
+  dialogCooldown -= dt;
+  talkHint = Math.max(0, talkHint - dt);
+
+  if (!dialogOpen) {
+    // 靠近向导时显示提示
+    if (guideNearPlayer() && !dead) {
+      talkHint = 0.12; // 保持闪烁计时（每帧重置，用于闪烁）
+      if (keys['e'] && dialogCooldown <= 0 && !victory) {
+        openDialog();
+      }
+    }
+    return;
+  }
+
+  // 对话打开中：按住E/Esc推进
+  if (keys['e'] || keys['escape']) {
+    const lines = DIALOG[guideDialogKey()];
+    if (dialogTypewriter < lines[dialogLine].length) {
+      dialogTypewriter = lines[dialogLine].length; // 立刻显示整句
+    } else if (dialogCooldown <= 0) {
+      dialogLine++;
+      if (dialogLine >= lines.length) {
+        dialogOpen = false;
+        dialogLine = 0;
+      } else {
+        dialogTypewriter = 0;
+        dialogCooldown = 0.3;
+      }
+    }
+    keys['e'] = false; // 避免按住连跳
+    keys['escape'] = false;
+  }
+}
+
+function openDialog() {
+  dialogOpen = true;
+  dialogLine = 0;
+  dialogTypewriter = 0;
+  dialogCooldown = 0.35;
 }
 
 // ---------------- 线虫敌人 ----------------
@@ -1072,10 +1161,110 @@ function drawGuideName() {
   ctx.font = 'bold 13px "Microsoft YaHei", sans-serif';
   ctx.textAlign = 'center';
   ctx.fillStyle = 'rgba(0,0,0,0.45)';
-  ctx.fillText('向导', guide.cx - cam.x + 1, guide.y - cam.y - 9);
+  ctx.fillText('守林人', guide.cx - cam.x + 1, guide.y - cam.y - 9);
   ctx.fillStyle = '#ffe98a';
-  ctx.fillText('向导', guide.cx - cam.x, guide.y - cam.y - 10);
+  ctx.fillText('守林人', guide.cx - cam.x, guide.y - cam.y - 10);
   ctx.restore();
+}
+
+// 靠近时的"按E交谈"气泡
+function drawTalkHint() {
+  if (dialogOpen || victory) return;
+  if (!guideNearPlayer() || dead) return;
+  const blink = Math.floor(performance.now() / 300) % 2 === 0;
+  const gx = guide.cx - cam.x, gy = guide.y - cam.y - 44;
+  ctx.save();
+  ctx.font = 'bold 13px "Microsoft YaHei", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.globalAlpha = blink ? 1 : 0.45;
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  roundRectPath(ctx, gx - 46, gy - 16, 92, 24, 12);
+  ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.fillText('[ E ] 交谈', gx, gy);
+  ctx.restore();
+}
+
+// 对话框面板
+function drawDialog() {
+  if (!dialogOpen) return;
+  const lines = DIALOG[guideDialogKey()];
+  const line = lines[dialogLine];
+  const showText = line.substring(0, Math.ceil(dialogTypewriter));
+  // 打字机推进
+  if (dialogTypewriter < line.length) {
+    dialogTypewriter += 2;
+  }
+
+  const boxW = Math.min(VW * 0.72, 680);
+  const boxH = 130;
+  const bx = VW / 2 - boxW / 2, by = VH - boxH - 26;
+  ctx.save();
+  ctx.fillStyle = 'rgba(14,20,32,0.88)';
+  roundRectPath(ctx, bx, by, boxW, boxH, 14);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(155,230,106,0.7)';
+  ctx.lineWidth = 3;
+  roundRectPath(ctx, bx, by, boxW, boxH, 14);
+  ctx.stroke();
+
+  // 头像框
+  const avR = 34;
+  ctx.fillStyle = '#2a3a28';
+  ctx.beginPath();
+  ctx.arc(bx + 42, by + boxH / 2, avR, 0, 6.29);
+  ctx.fill();
+  ctx.strokeStyle = '#9ae66a';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(bx + 42, by + boxH / 2, avR, 0, 6.29);
+  ctx.stroke();
+  // 头像（守林人简笔画）
+  ctx.fillStyle = '#e8b57a';
+  ctx.beginPath();
+  ctx.arc(bx + 42, by + boxH / 2 - 4, 14, 0, 6.29);
+  ctx.fill();
+  ctx.fillStyle = '#5a3a22';
+  ctx.fillRect(bx + 34, by + boxH / 2 - 14, 16, 10);
+  ctx.fillStyle = '#3a2a18';
+  ctx.fillRect(bx + 28, by + boxH / 2 + 6, 28, 4);
+
+  // 名字
+  ctx.textAlign = 'left';
+  ctx.font = 'bold 16px "Microsoft YaHei", sans-serif';
+  ctx.fillStyle = '#ffe98a';
+  ctx.fillText('守林人', bx + 90, by + 28);
+  // 对话文本（打字机）
+  ctx.font = '16px "Microsoft YaHei", sans-serif';
+  ctx.fillStyle = '#eef2ff';
+  wrapText(showText, bx + 90, by + 56, boxW - 110, 26);
+  // 提示继续
+  if (dialogTypewriter >= line.length) {
+    const t = Math.floor(performance.now() / 400) % 2 === 0;
+    ctx.fillStyle = t ? '#9ae66a' : '#3a4a3a';
+    ctx.font = '14px "Microsoft YaHei", sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText('▼ 按 E / Esc 继续', bx + boxW - 20, by + boxH - 12);
+  }
+  ctx.restore();
+}
+
+// 换行文本
+function wrapText(text, x, y, maxW, lineH) {
+  ctx.textAlign = 'left';
+  let line = '';
+  let curY = y;
+  for (const ch of text) {
+    const test = line + ch;
+    if (ctx.measureText(test).width > maxW && line) {
+      ctx.fillText(line, x, curY);
+      line = ch;
+      curY += lineH;
+    } else {
+      line = test;
+    }
+  }
+  if (line) ctx.fillText(line, x, curY);
 }
 
 function drawParticles() {
@@ -1205,30 +1394,111 @@ function drawLongicorn() {
 // ---------------- 无人机绘制 ----------------
 function drawDrone() {
   const x = drone.x - cam.x, y = drone.y - cam.y;
+  const now = performance.now() * 0.001;
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(drone.rot);
-  // 旋翼
-  const rotorOffset = Math.sin(drone.rotor) * 4;
-  ctx.strokeStyle = 'rgba(200,220,255,0.5)';
+
+  // 四条机械臂
+  ctx.strokeStyle = '#8fa3b8';
   ctx.lineWidth = 3;
+  ctx.lineCap = 'round';
   ctx.beginPath();
-  ctx.moveTo(-20, -8 + rotorOffset);
-  ctx.lineTo(20, -8 + rotorOffset);
+  ctx.moveTo(-10, 0); ctx.lineTo(-24, -12);
+  ctx.moveTo(10, 0); ctx.lineTo(24, -12);
+  ctx.moveTo(-10, 0); ctx.lineTo(-24, 8);
+  ctx.moveTo(10, 0); ctx.lineTo(24, 8);
   ctx.stroke();
-  // 机身
+
+  // 四个旋翼电机 + 螺旋桨（旋转动画）
+  const rotorSpin = now * 40;
+  const props = [
+    { px: -24, py: -12 }, { px: 24, py: -12 },
+    { px: -24, py: 8 }, { px: 24, py: 8 },
+  ];
+  for (const p of props) {
+    ctx.fillStyle = '#c9d6e4';
+    ctx.beginPath();
+    ctx.arc(p.px, p.py, 4, 0, 6.29);
+    ctx.fill();
+    // 旋转桨叶（椭圆扫出，产生模糊感）
+    ctx.strokeStyle = 'rgba(200,220,255,0.65)';
+    ctx.lineWidth = 2.5;
+    for (let i = 0; i < 2; i++) {
+      const a = rotorSpin + i * Math.PI;
+      ctx.beginPath();
+      ctx.moveTo(p.px + Math.cos(a) * 12, p.py + Math.sin(a) * 12);
+      ctx.lineTo(p.px - Math.cos(a) * 12, p.py - Math.sin(a) * 12);
+      ctx.stroke();
+    }
+  }
+
+  // 机身主体
+  ctx.fillStyle = '#5b7186';
+  roundRectPath(ctx, -16, -5, 32, 16, 6);
+  ctx.fill();
+  // 机身上壳高光
+  ctx.fillStyle = '#7d96ad';
+  roundRectPath(ctx, -16, -5, 32, 6, 4);
+  ctx.fill();
+  // 机身中线暗槽
   ctx.fillStyle = '#3a4a5a';
-  roundRectPath(ctx, -16, -5, 32, 14, 4);
+  roundRectPath(ctx, -16, 1, 32, 2, 1);
   ctx.fill();
-  ctx.fillStyle = '#5a738c';
-  roundRectPath(ctx, -16, -5, 32, 5, 4);
-  ctx.fill();
-  // 益生菌舱（发光）
-  const glow = 0.5 + 0.5 * Math.sin(performance.now() * 0.004);
-  ctx.fillStyle = `rgba(155,230,106,${0.5 + glow * 0.5})`;
+
+  // 前方指示灯（青蓝）
+  const blink = Math.floor(now * 3) % 2 === 0;
+  ctx.fillStyle = blink ? '#4dd8ff' : '#2a7a94';
   ctx.beginPath();
-  ctx.arc(0, 4, 5 + glow * 1.5, 0, 6.29);
+  ctx.arc(14, 0, 3, 0, 6.29);
   ctx.fill();
+  ctx.fillStyle = 'rgba(77,216,255,0.35)';
+  ctx.beginPath();
+  ctx.arc(14, 0, 6, 0, 6.29);
+  ctx.fill();
+
+  // 尾部推进器 + 尾焰
+  ctx.fillStyle = '#39495c';
+  ctx.beginPath();
+  ctx.moveTo(-16, -2); ctx.lineTo(-22, -3); ctx.lineTo(-22, 3); ctx.lineTo(-16, 2);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = 'rgba(120,220,255,0.6)';
+  ctx.beginPath();
+  ctx.moveTo(-22, -2); ctx.lineTo(-30, 0); ctx.lineTo(-22, 2);
+  ctx.closePath();
+  ctx.fill();
+
+  // 底部益生菌舱（发光）+ 喷嘴
+  const glow = 0.5 + 0.5 * Math.sin(now * 5);
+  ctx.fillStyle = '#26323f';
+  roundRectPath(ctx, -8, 7, 16, 7, 3);
+  ctx.fill();
+  ctx.fillStyle = `rgba(155,230,106,${0.6 + glow * 0.4})`;
+  ctx.beginPath();
+  ctx.arc(0, 8, 4.5 + glow * 1.2, 0, 6.29);
+  ctx.fill();
+  // 舱内益生菌颗粒
+  if (proBiotic > 0) {
+    ctx.fillStyle = '#c8ff7a';
+    ctx.beginPath();
+    ctx.arc(0, 8, 2.5, 0, 6.29);
+    ctx.fill();
+  }
+  // 底舱辉光
+  ctx.fillStyle = `rgba(183,255,94,${0.25 + glow * 0.25})`;
+  ctx.beginPath();
+  ctx.arc(0, 12, 8, 0, 6.29);
+  ctx.fill();
+
+  // 降落架（两条短腿）
+  ctx.strokeStyle = '#6b8298';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(-7, 12); ctx.lineTo(-9, 17);
+  ctx.moveTo(7, 12); ctx.lineTo(9, 17);
+  ctx.stroke();
+
   ctx.restore();
 }
 
@@ -1425,9 +1695,11 @@ function drawObjective() {
   ctx.shadowColor = 'rgba(0,0,0,0.7)';
   ctx.shadowBlur = 3;
   ctx.fillStyle = 'rgba(255,255,255,0.85)';
-  if (!missionStarted) {
-    ctx.fillText('靠近向导领取无人机，净化线虫灾害', VW / 2, VH - 80);
-  } else if (!bossActive && WORMS.length > 0) {
+  if (dialogOpen) {
+    // 对话打开时隐藏
+  } else if (!missionStarted) {
+    ctx.fillText('靠近守林人按 E 交谈，领取无人机', VW / 2, VH - 80);
+  } else if (!bossActive && !victory) {
     ctx.fillText('发射益生菌净化线虫（鼠标左键）', VW / 2, VH - 80);
   }
   ctx.restore();
@@ -1508,6 +1780,7 @@ function loop(ts) {
 
   updatePlayer(dt);
   updateGuide(dt);
+  updateDialog(dt);
   updateWorms(dt);
   updateBoss(dt);
   updateDrone(dt);
@@ -1538,6 +1811,7 @@ function loop(ts) {
   drawParticles();
   drawNightOverlay(s);
   ctx.restore();
+  drawTalkHint();
   drawHurtFlash();
   drawDeathScreen();
   drawVictoryScreen();
@@ -1545,6 +1819,7 @@ function loop(ts) {
   drawBossBar();
   drawHpUI();
   drawObjective();
+  drawDialog();
   updateHotbar();
   updateClock(s);
 }
