@@ -360,30 +360,41 @@ function splitSpriteParts(img, hipYFrac, midXFrac, legFrac) {
   const legW = Math.round(w * legFrac);
   const upperH = hipY;
   const legH = h - hipY;                        // 脚底到髋部
-  // 裁剪并记录裁剪偏移（用于绘制时对齐）
+  // 切分并只去纯白、保持原始矩形尺寸（不裁剪透明边距，避免接缝缺口）
   const mk = (sw, sh, sx, sy) => {
     const c = document.createElement('canvas');
     c.width = sw; c.height = sh;
     c.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
-    const trimmed = cleanPart(c);
-    // 计算裁剪后内容相对原区域的偏移
-    return { canvas: trimmed, offsetX: 0, offsetY: 0 };
+    removeWhiteKeepSize(c);
+    return c;
   };
   const upper = mk(w, upperH, 0, 0);
   const leftLeg = mk(legW, legH, midX - legW, hipY);
   const rightLeg = mk(legW, legH, midX, hipY);
   return {
-    upper: upper.canvas,
-    leftLeg: leftLeg.canvas,
-    rightLeg: rightLeg.canvas,
-    // 布局信息（基于原始未裁剪区域，单位 = 原始像素）
-    upperW: w, upperH,                // 上半身区域
-    leftLegX: midX - legW,            // 左腿原区域左边缘
-    rightLegX: midX,                  // 右腿原区域左边缘
+    upper,
+    leftLeg,
+    rightLeg,
+    // 布局信息（原始像素单位）
+    upperW: w, upperH,
+    leftLegX: midX - legW,
+    rightLegX: midX,
     legW, legH,
-    hipY,                             // 头顶到髋部
+    hipY,
     fullW: w, fullH: h,
   };
+}
+
+// 把纯白像素设为透明，但保持画布尺寸不变（用于切分部件，避免接缝缺口）
+function removeWhiteKeepSize(c) {
+  const w = c.width, h = c.height;
+  const g = c.getContext('2d');
+  const id = g.getImageData(0, 0, w, h);
+  const d = id.data;
+  for (let i = 0; i < w * h; i++) {
+    if (d[i * 4] > 240 && d[i * 4 + 1] > 240 && d[i * 4 + 2] > 240) d[i * 4 + 3] = 0;
+  }
+  g.putImageData(id, 0, 0);
 }
 function removeBossBG(img) {
   const w = img.width, h = img.height;
@@ -2676,9 +2687,9 @@ async function init() {
     ]);
     setP(0.6, '处理角色动画…');
     // 先缩小大图再抠图，避免同步处理 1536×1024 等大图导致主线程卡死
-    sprites.player = splitSpriteParts(removeWhiteBG(downscaleImage(pImg, 300)), 0.58, 0.50, 0.30);
+    sprites.player = splitSpriteParts(removeWhiteBG(downscaleImage(pImg, 300)), 0.64, 0.50, 0.30);
     setP(0.72);
-    sprites.guide = splitSpriteParts(removeWhiteBG(downscaleImage(gImg, 300)), 0.62, 0.50, 0.34);
+    sprites.guide = splitSpriteParts(removeWhiteBG(downscaleImage(gImg, 300)), 0.68, 0.50, 0.34);
     setP(0.82, '召唤天牛…');
     sprites.longicorn = removeBossBG(downscaleImage(bossImg, 420));
     setP(0.9, '生成松林…');
