@@ -1645,21 +1645,45 @@ function drawEntity(e, spr) {
 
 // 程序化人物绘制（含走路摆腿）
 // cfg: { skin, shirt, pants, hair, hat, hatColor, beard }
-function drawCharacter(e, sheet) {
-  const x = e.cx - cam.x, y = e.y + e.h - cam.y;
+function drawCharacter(e, parts) {
+  const x = e.cx - cam.x, y = e.y + e.h - cam.y; // 脚底
   const h = e.h;
   const walking = e.onGround && Math.abs(e.vx) > 0.5;
-  // 按行走相位选帧：sheet 含 N 帧（无独立站立帧），循环全部帧
-  const N = sheet.frames.length;
-  const frameIdx = walking ? Math.floor(((e.walkPhase / (Math.PI * 2)) % 1) * N) % N : 0;
-  const frame = sheet.frames[frameIdx];
-  // 缩放到实体高度
-  const scale = h / sheet.frameH;
-  const dw = sheet.frameW * scale;
+  // 缩放：实体高 / sprite原高
+  const scale = h / parts.fullH;
+  const dw = parts.fullW * scale;
+  // 髋部到脚底的距离（像素→世界）
+  const legH = (parts.fullH - parts.hipY) * scale;   // 腿高（世界）
+  const upperH = h - legH;                           // 上半身高（世界）
+  const legWW = parts.legW * scale;
+
+  const ph = walking ? e.walkPhase : 0;
+  const legSwing = walking ? Math.sin(ph) : 0;
+  const bob = walking ? Math.abs(Math.sin(ph)) * 3 : 0;
+
   ctx.save();
-  ctx.translate(x, y);
+  // 锚点 = 脚底中点，向上为负Y
+  ctx.translate(x, y - bob);
   ctx.scale(e.face, 1);
-  ctx.drawImage(frame, -dw / 2, -h, dw, h);
+  ctx.translate(-dw / 2, 0);
+
+  // ---- 左腿：髋部锚点 ----
+  ctx.save();
+  ctx.translate(parts.leftLegX * scale, -legH);
+  ctx.rotate(-legSwing * 0.5);
+  ctx.drawImage(parts.leftLeg, 0, 0, legWW, legH);
+  ctx.restore();
+
+  // ---- 右腿 ----
+  ctx.save();
+  ctx.translate(parts.rightLegX * scale, -legH);
+  ctx.rotate(legSwing * 0.5);
+  ctx.drawImage(parts.rightLeg, 0, 0, legWW, legH);
+  ctx.restore();
+
+  // ---- 上半身：从头顶(-h)画到髋部(-legH) ----
+  ctx.drawImage(parts.upper, 0, -h, parts.upperW * scale, upperH);
+
   ctx.restore();
 }
 
@@ -2652,9 +2676,9 @@ async function init() {
     ]);
     setP(0.6, '处理角色动画…');
     // 先缩小大图再抠图，避免同步处理 1536×1024 等大图导致主线程卡死
-    sprites.player = splitSheetFrames(removeWhiteBG(downscaleImage(pWalkImg, 600)), 6);
+    sprites.player = splitSpriteParts(removeWhiteBG(downscaleImage(pImg, 300)), 0.58, 0.50, 0.30);
     setP(0.72);
-    sprites.guide = splitSheetFrames(removeWhiteBG(downscaleImage(gWalkImg, 600)), 6);
+    sprites.guide = splitSpriteParts(removeWhiteBG(downscaleImage(gImg, 300)), 0.62, 0.50, 0.34);
     setP(0.82, '召唤天牛…');
     sprites.longicorn = removeBossBG(downscaleImage(bossImg, 420));
     setP(0.9, '生成松林…');
