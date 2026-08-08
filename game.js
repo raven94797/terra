@@ -249,7 +249,31 @@ function removeWhiteBG(img, threshold = 232) {
   return out;
 }
 
-// 去除天牛 sprite 的森林/紫色背景（保留暖色主体：橙、棕、黑、黄、红、白）
+// 把人物 sprite 从髋部切分为上半身 + 左腿 + 右腿
+// hipYFrac: 髋部相对 sprite 高度的比例（0~1）
+// midXFrac: 左右腿分界线相对 sprite 宽度的比例
+// legFrac: 单腿宽度相对 sprite 宽度的比例
+function splitSpriteParts(img, hipYFrac, midXFrac, legFrac) {
+  const w = img.width, h = img.height;
+  const hipY = Math.round(h * hipYFrac);
+  const midX = Math.round(w * midXFrac);
+  const legW = Math.round(w * legFrac);
+  const upperH = hipY;
+  const legH = h - hipY;
+  const mk = (sw, sh, sx, sy) => {
+    const c = document.createElement('canvas');
+    c.width = sw; c.height = sh;
+    c.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+    return c;
+  };
+  return {
+    upper: mk(w, upperH, 0, 0),
+    leftLeg:  mk(legW, legH, midX - legW, hipY),
+    rightLeg: mk(legW, legH, midX, hipY),
+    hipY, midX, legW,
+    fullW: w, fullH: h,
+  };
+}
 function removeBossBG(img) {
   const w = img.width, h = img.height;
   const c = document.createElement('canvas');
@@ -1510,123 +1534,50 @@ function drawEntity(e, spr) {
 
 // 程序化人物绘制（含走路摆腿）
 // cfg: { skin, shirt, pants, hair, hat, hatColor, beard }
-function drawCharacter(e, cfg) {
+function drawCharacter(e, parts) {
   const x = e.cx - cam.x, y = e.y + e.h - cam.y;
   const w = e.w, h = e.h;
   const walking = e.onGround && Math.abs(e.vx) > 0.5;
-  const moving = walking;
-  // 摆腿相位（走路时交替前后摆动）
-  const ph = moving ? e.walkPhase : 0;
-  const legSwing = moving ? Math.sin(ph) * 0.7 : 0;
-  const armSwing = moving ? Math.sin(ph) * 0.5 : 0;
-  // 蹲/落地的腿部偏移
-  const land = e.onGround ? 0 : clamp(e.vy * 0.002, -0.1, 0.08);
-  const bob = walking ? Math.abs(Math.sin(ph)) * 2 : 0;
+  // sprite 原尺寸
+  const sw = parts.fullW, sh = parts.fullH;
+  // 缩放到实体尺寸（保持比例），实际显示高度 = h
+  const scale = h / sh;
+  const dw = sw * scale;
+  // 髋部坐标（在世界绘制尺度下的 Y 与 X）
+  const hipYWorld = (parts.hipY / sh) * h;
+  const midXWorld = (parts.midX / sw) * dw;
+  const legWW = (parts.legW / sw) * dw;
+
+  const ph = walking ? e.walkPhase : 0;
+  const legSwing = walking ? Math.sin(ph) : 0;
+  // 走路时身体轻微上下浮动
+  const bob = walking ? Math.abs(Math.sin(ph)) * 3 : 0;
 
   ctx.save();
+  // 脚底中点为锚点
   ctx.translate(x, y - bob);
   ctx.scale(e.face, 1);
-  ctx.translate(-w / 2, 0);
+  ctx.translate(-dw / 2, 0);
 
-  // 腿（两条，交替摆动）—— 画在身体下方
-  const legLen = h * 0.32;
-  const hipY = h * 0.72;
-  const footY = h;
-  ctx.lineCap = 'round';
-  // 后腿（摆动反向）
-  drawLeg(legLen, hipY, footY, -legSwing - land, cfg.pants, '#000000');
-  // 前腿
-  drawLeg(legLen, hipY, footY, legSwing - land, cfg.pants, '#000000');
-
-  // 身体（上衣）
-  ctx.fillStyle = cfg.shirt;
-  roundRectPath(ctx, w * 0.18, h * 0.32, w * 0.64, h * 0.44, 4);
-  ctx.fill();
-  ctx.fillStyle = shade(cfg.shirt, -18);
-  roundRectPath(ctx, w * 0.18, h * 0.32, w * 0.64, h * 0.08, 3);
-  ctx.fill();
-
-  // 手臂（摆动）
-  ctx.lineWidth = w * 0.16;
-  ctx.strokeStyle = cfg.shirt;
-  // 后臂
-  ctx.beginPath();
-  ctx.moveTo(w * 0.28, h * 0.4);
-  ctx.lineTo(w * 0.14, h * 0.62 + armSwing * h * 0.16);
-  ctx.stroke();
-  // 前臂（手部肤色）
-  ctx.beginPath();
-  ctx.moveTo(w * 0.72, h * 0.4);
-  ctx.lineTo(w * 0.86, h * 0.62 - armSwing * h * 0.16);
-  ctx.stroke();
-  ctx.fillStyle = cfg.skin;
-  ctx.beginPath();
-  ctx.arc(w * 0.14, h * 0.62 + armSwing * h * 0.16, w * 0.07, 0, 6.29);
-  ctx.arc(w * 0.86, h * 0.62 - armSwing * h * 0.16, w * 0.07, 0, 6.29);
-  ctx.fill();
-
-  // 头部
-  const headR = w * 0.3;
-  const headY = h * 0.22;
-  ctx.fillStyle = cfg.skin;
-  ctx.beginPath();
-  ctx.arc(w * 0.5, headY, headR, 0, 6.29);
-  ctx.fill();
-  // 头发
-  ctx.fillStyle = cfg.hair;
-  ctx.beginPath();
-  ctx.arc(w * 0.5, headY - headR * 0.25, headR * 0.95, Math.PI, 0);
-  ctx.fill();
-  ctx.fillRect(w * 0.5 - headR * 0.95, headY - headR * 0.25, headR * 1.9, headR * 0.3);
-  // 眼睛
-  ctx.fillStyle = '#202020';
-  ctx.beginPath();
-  ctx.arc(w * 0.42, headY + headR * 0.1, headR * 0.12, 0, 6.29);
-  ctx.arc(w * 0.58, headY + headR * 0.1, headR * 0.12, 0, 6.29);
-  ctx.fill();
-
-  // 帽子/胡须等配件
-  if (cfg.beard) {
-    ctx.fillStyle = cfg.beard;
-    roundRectPath(ctx, w * 0.36, headY + headR * 0.35, w * 0.28, h * 0.12, 4);
-    ctx.fill();
-  }
-  if (cfg.hat) {
-    ctx.fillStyle = cfg.hatColor || cfg.hair;
-    ctx.beginPath();
-    ctx.ellipse(w * 0.5, headY - headR * 0.55, headR * 1.3, headR * 0.35, 0, 0, 6.29);
-    ctx.fill();
-    ctx.fillRect(w * 0.5 - headR * 0.9, headY - headR * 1.15, headR * 1.8, headR * 0.7);
-  }
-
-  ctx.restore();
-}
-
-function drawLeg(len, hipY, footY, swing, pants, boot) {
-  ctx.fillStyle = pants;
+  // ---- 左腿（摆动，相位 0） ----
   ctx.save();
-  ctx.translate(0, hipY);
-  ctx.rotate(swing * 0.55);
-  ctx.beginPath();
-  ctx.moveTo(0, 0);
-  ctx.lineTo(len * 0.12, len);
-  ctx.lineTo(len * 0.32, len);
-  ctx.lineTo(len * 0.24, 0);
-  ctx.closePath();
-  ctx.fill();
-  // 靴子
-  ctx.fillStyle = boot;
-  ctx.beginPath();
-  ctx.ellipse(len * 0.22, len + 2, len * 0.22, len * 0.16, 0, 0, 6.29);
-  ctx.fill();
+  // 髋部锚点 = 左腿根部 = (midX - legW) 在 sprite 中 → 缩放后 (midXWorld - legWW)
+  ctx.translate(midXWorld - legWW, hipYWorld);
+  ctx.rotate(-legSwing * 0.45);
+  ctx.drawImage(parts.leftLeg, 0, 0, legWW, h - hipYWorld);
   ctx.restore();
-}
 
-function shade(color, delta) {
-  const n = parseInt(color.slice(1), 16);
-  let r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
-  r = clamp(r + delta, 0, 255); g = clamp(g + delta, 0, 255); b = clamp(b + delta, 0, 255);
-  return `rgb(${r},${g},${b})`;
+  // ---- 右腿（摆动，反相） ----
+  ctx.save();
+  ctx.translate(midXWorld, hipYWorld);
+  ctx.rotate(legSwing * 0.45);
+  ctx.drawImage(parts.rightLeg, 0, 0, legWW, h - hipYWorld);
+  ctx.restore();
+
+  // ---- 上半身（静止） ----
+  ctx.drawImage(parts.upper, 0, 0, dw, hipYWorld);
+
+  ctx.restore();
 }
 
 function drawGuideName() {
@@ -2570,15 +2521,9 @@ function frame(dt, ts) {
   drawWorms();
   drawLongicorn();
   drawBossShots();
-  drawCharacter(guide, {
-    skin: '#e8b57a', shirt: '#8a5a2b', pants: '#5a3a18',
-    hair: '#b9b9c0', hat: true, hatColor: '#6e4520', beard: '#d8d8dd',
-  });
+  drawCharacter(guide, sprites.guide);
   drawGuideName();
-  drawCharacter(player, {
-    skin: '#f0c492', shirt: '#5a8a4a', pants: '#4a3624',
-    hair: '#3a2a18', hat: true, hatColor: '#7a9a4a', beard: null,
-  });
+  drawCharacter(player, sprites.player);
   drawDrone();
   drawGuardDrone();
   drawProbioticShots();
@@ -2620,9 +2565,9 @@ async function init() {
       loadImage('assets/boss/longicorn.png'),
     ]);
     setP(0.6, '抠除背景…');
-    sprites.player = removeWhiteBG(pImg);
+    sprites.player = splitSpriteParts(removeWhiteBG(pImg), 0.58, 0.48, 0.28);
     setP(0.72);
-    sprites.guide = removeWhiteBG(gImg);
+    sprites.guide = splitSpriteParts(removeWhiteBG(gImg), 0.62, 0.50, 0.32);
     setP(0.82, '召唤天牛…');
     sprites.longicorn = removeBossBG(bossImg);
     setP(0.9, '生成松林…');
