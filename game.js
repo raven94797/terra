@@ -249,6 +249,64 @@ function removeWhiteBG(img, threshold = 232) {
   return out;
 }
 
+// 去除天牛 sprite 的森林/紫色背景（保留暖色主体：橙、棕、黑、黄、红、白）
+function removeBossBG(img) {
+  const w = img.width, h = img.height;
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const g = c.getContext('2d');
+  g.drawImage(img, 0, 0);
+  const id = g.getImageData(0, 0, w, h);
+  const d = id.data;
+  const visited = new Uint8Array(w * h);
+  const stack = [];
+  // 背景判定：偏绿色（G 主导）或偏紫（B 高且较暗）或极暗且非暖色
+  const isBG = i => {
+    const r = d[i * 4], gr = d[i * 4 + 1], b = d[i * 4 + 2];
+    // 绿色调（森林）：G > R+8 且 G > B+15
+    if (gr > r + 8 && gr > b + 15) return true;
+    // 蓝紫调：B > R+15 且 B > G+10（且不太亮，避免误判白高光）
+    if (b > r + 15 && b > gr + 10 && (r + gr + b) < 360) return true;
+    // 极暗（背景阴影）+ 非暖红：明度 < 60 且 R 不显著大于 G/B
+    const lum = r + gr + b;
+    if (lum < 90 && r < gr + 10 && r < b + 10) return true;
+    return false;
+  };
+  // 从四边洪水填充背景
+  for (let x = 0; x < w; x++) { stack.push(x); stack.push((h - 1) * w + x); }
+  for (let y = 0; y < h; y++) { stack.push(y * w); stack.push(y * w + w - 1); }
+  while (stack.length) {
+    const i = stack.pop();
+    if (visited[i] || !isBG(i)) continue;
+    visited[i] = 1;
+    d[i * 4 + 3] = 0;
+    const x = i % w, y = (i / w) | 0;
+    if (x > 0 && !visited[i - 1]) stack.push(i - 1);
+    if (x < w - 1 && !visited[i + 1]) stack.push(i + 1);
+    if (y > 0 && !visited[i - w]) stack.push(i - w);
+    if (y < h - 1 && !visited[i + w]) stack.push(i + w);
+  }
+  g.putImageData(id, 0, 0);
+  // 裁剪到非透明主体
+  let minX = w, minY = h, maxX = -1, maxY = -1;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (d[(y * w + x) * 4 + 3] > 8) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (maxX < 0) return c;
+  const cw = maxX - minX + 1, ch = maxY - minY + 1;
+  const out = document.createElement('canvas');
+  out.width = cw; out.height = ch;
+  out.getContext('2d').drawImage(c, minX, minY, cw, ch, 0, 0, cw, ch);
+  return out;
+}
+
 // ---------------- 世界生成（松林） ----------------
 function idx(tx, ty) { return ty * WORLD_W + tx; }
 function getTile(tx, ty) {
@@ -1651,136 +1709,70 @@ function drawWorms() {
 function drawLongicorn() {
   if (!longicorn) return;
   const b = longicorn;
+  const spr = sprites.longicorn;
+  if (!spr) return;
   const x = b.x - cam.x, y = b.y - cam.y;
   const w = b.w, h = b.h;
   const flash = b.flash > 0;
-  const body = flash ? '#fff' : (b.enraged ? '#e05b2a' : '#b8773f');
-  const dark = flash ? '#eee' : (b.enraged ? '#a33f18' : '#8a5a2b');
-  const stripe = flash ? '#ddd' : (b.enraged ? '#7a2f10' : '#5a3a18');
-  const wingFlap = Math.sin(b.animT * 22) * 0.85;
+
+  // 翅膀扇动：垂直轻微缩放产生扑翅感
+  const wingFlap = 1 + Math.sin(b.animT * 22) * 0.08;
+  // 悬停轻微上下浮动
+  const hover = Math.sin(b.animT * 3.5) * 2.5;
+
   ctx.save();
-  ctx.translate(x + w / 2, y + h / 2);
-  ctx.rotate(b.dir > 0 ? 0 : Math.PI);
+  ctx.translate(x + w / 2, y + h / 2 + hover);
+  // 镜像：根据方向翻转
+  ctx.scale(b.dir > 0 ? 1 : -1, wingFlap);
 
-  // ---- 尾刺（腹部尖端） ----
-  ctx.fillStyle = dark;
-  ctx.beginPath();
-  ctx.moveTo(-w / 2 + 2, -h / 2 + 2);
-  ctx.lineTo(-w / 2 - 12, 0);
-  ctx.lineTo(-w / 2 + 2, h / 2 - 2);
-  ctx.closePath();
-  ctx.fill();
+  // 计算目标尺寸：保持 sprite 原比例，适配天牛 w/h
+  const ar = spr.width / spr.height;
+  let dw = w * 1.5, dh = dw / ar;
+  if (dh < h * 1.5) { dh = h * 1.5; dw = dh * ar; }
 
-  // ---- 六足（动态） ----
-  ctx.strokeStyle = dark;
-  ctx.lineWidth = 2.5;
-  ctx.lineCap = 'round';
-  const legSwing = Math.sin(b.animT * 6);
-  for (let i = 0; i < 3; i++) {
-    const lx = -10 - i * 14;
-    const amp = Math.sin(b.animT * 6 + i * 1.1);
-    ctx.beginPath();
-    ctx.moveTo(lx, h / 2);
-    ctx.lineTo(lx - 4, h / 2 + 10);
-    ctx.lineTo(lx - 9 + amp * 2, h / 2 + 16);
-    ctx.moveTo(lx, -h / 2);
-    ctx.lineTo(lx - 4, -h / 2 - 10);
-    ctx.lineTo(lx - 9 - amp * 2, -h / 2 - 16);
-    ctx.stroke();
+  // 狂暴光晕（底层红色辐射）
+  if (b.enraged && !flash) {
+    ctx.save();
+    const auraPulse = 0.6 + 0.4 * Math.sin(b.animT * 8);
+    ctx.globalAlpha = 0.55 * auraPulse;
+    ctx.shadowColor = '#ff3a1a';
+    ctx.shadowBlur = 30;
+    ctx.drawImage(spr, -dw / 2, -dh / 2, dw, dh);
+    ctx.restore();
   }
 
-  // ---- 半透明翅膀（蜂后式，双层纹理） ----
-  ctx.save();
-  ctx.rotate(wingFlap);
-  ctx.globalAlpha = flash ? 0.9 : 0.55;
-  // 上翅
-  ctx.fillStyle = body;
-  ctx.beginPath();
-  ctx.ellipse(-4, -16, 13, 20, -0.3, 0, 6.29);
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(40,20,10,0.5)';
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.moveTo(2, -16); ctx.lineTo(-10, -32);
-  ctx.stroke();
-  // 下翅（小）
-  ctx.fillStyle = stripe;
-  ctx.beginPath();
-  ctx.ellipse(-2, -30, 9, 13, 0.3, 0, 6.29);
-  ctx.fill();
-  // 镜像翅膀
-  ctx.fillStyle = body;
-  ctx.beginPath();
-  ctx.ellipse(-4, 16, 13, 20, 0.3, 0, 6.29);
-  ctx.fill();
-  ctx.fillStyle = stripe;
-  ctx.beginPath();
-  ctx.ellipse(-2, 30, 9, 13, -0.3, 0, 6.29);
-  ctx.fill();
+  // 主体绘制
+  if (flash) {
+    // 受伤闪白：用 globalCompositeOperation 实现变白
+    ctx.save();
+    ctx.globalAlpha = 0.95;
+    ctx.drawImage(spr, -dw / 2, -dh / 2, dw, dh);
+    ctx.restore();
+  } else {
+    // 狂暴：叠加红色调
+    if (b.enraged) {
+      ctx.save();
+      ctx.globalAlpha = 1;
+      ctx.drawImage(spr, -dw / 2, -dh / 2, dw, dh);
+      ctx.globalCompositeOperation = 'multiply';
+      ctx.fillStyle = '#ff6a3a';
+      ctx.globalAlpha = 0.45;
+      ctx.fillRect(-dw / 2, -dh / 2, dw, dh);
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.restore();
+    } else {
+      ctx.drawImage(spr, -dw / 2, -dh / 2, dw, dh);
+    }
+  }
+
   ctx.restore();
 
-  // ---- 胸节（主身体） ----
-  ctx.fillStyle = body;
-  roundRectPath(ctx, -w / 2 + 20, -h / 2, w - 44, h, 10);
-  ctx.fill();
-  // 胸节高光
-  ctx.fillStyle = flash ? '#fff' : (b.enraged ? '#ff8a55' : '#d99a5a');
-  roundRectPath(ctx, -w / 2 + 22, -h / 2 + 2, w - 48, h / 2 - 2, 6);
-  ctx.fill();
-
-  // ---- 腹部条纹（黄黑相间，蜂后特征） ----
-  ctx.fillStyle = stripe;
-  const segs = 4;
-  const segW = (w - 44) / segs;
-  for (let i = 1; i < segs; i++) {
-    ctx.fillRect(-w / 2 + 20 + i * segW - 2, -h / 2 + 1, 3, h - 2);
-  }
-  // 腹部斑点
-  ctx.fillStyle = stripe;
-  for (let i = 0; i < 3; i++) {
-    ctx.beginPath();
-    ctx.arc(-w / 2 + 34 + i * 12, 0, 2.5, 0, 6.29);
-    ctx.fill();
-  }
-
-  // ---- 头部 + 口器 + 触角 ----
-  ctx.fillStyle = dark;
+  // 阴影
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,0.32)';
   ctx.beginPath();
-  ctx.arc(w / 2 - 8, 0, 10, 0, 6.29);
+  ctx.ellipse(x + w / 2, y + h - 4, w * 0.5, 6, 0, 0, 6.29);
   ctx.fill();
-  ctx.fillStyle = body;
-  ctx.beginPath();
-  ctx.arc(w / 2 - 6, 0, 6.5, 0, 6.29);
-  ctx.fill();
-  // 口器（咀嚼式）
-  ctx.strokeStyle = '#2a1a10';
-  ctx.lineWidth = 2.5;
-  ctx.beginPath();
-  ctx.moveTo(w / 2, 3);
-  ctx.lineTo(w / 2 + 8, 6);
-  ctx.moveTo(w / 2, -3);
-  ctx.lineTo(w / 2 + 8, -6);
-  ctx.stroke();
-  // 长触角（天牛标志性）
-  const antennae = Math.sin(b.animT * 8);
-  ctx.strokeStyle = '#2a1a10';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(w / 2 - 4, -5);
-  ctx.quadraticCurveTo(w / 2 + 10, -22 + antennae * 3, w / 2 + 26, -18 + antennae * 5);
-  ctx.moveTo(w / 2 - 4, 5);
-  ctx.quadraticCurveTo(w / 2 + 10, 22 - antennae * 3, w / 2 + 26, 18 - antennae * 5);
-  ctx.stroke();
-  // 复眼（发光）
-  ctx.fillStyle = '#ffd94d';
-  ctx.beginPath(); ctx.arc(w / 2 - 2, -4, 3.5, 0, 6.29); ctx.fill();
-  ctx.fillStyle = '#ff8a00';
-  ctx.beginPath(); ctx.arc(w / 2 - 2, -4, 1.5, 0, 6.29); ctx.fill();
-  ctx.fillStyle = '#ffd94d';
-  ctx.beginPath(); ctx.arc(w / 2 - 2, 4, 3.5, 0, 6.29); ctx.fill();
-  ctx.fillStyle = '#ff8a00';
-  ctx.beginPath(); ctx.arc(w / 2 - 2, 4, 1.5, 0, 6.29); ctx.fill();
-
   ctx.restore();
 }
 
@@ -2424,16 +2416,19 @@ async function init() {
     tileTypes.forEach((t, i) => { tex[t] = makeTile(tileImgs[i], TILE_DEF[t].cropTop || 0); });
     setP(0.4, '处理角色素材…');
 
-    const [pImg, gImg, mImg] = await Promise.all([
+    const [pImg, gImg, mImg, bossImg] = await Promise.all([
       loadImage('assets/sprites/player.png'),
       loadImage('assets/sprites/guide.png'),
       loadImage('assets/bg/mountains.png'),
+      loadImage('assets/boss/longicorn.png'),
     ]);
     setP(0.6, '抠除背景…');
     sprites.player = removeWhiteBG(pImg);
     setP(0.72);
     sprites.guide = removeWhiteBG(gImg);
-    setP(0.84, '生成松林…');
+    setP(0.82, '召唤天牛…');
+    sprites.longicorn = removeBossBG(bossImg);
+    setP(0.9, '生成松林…');
     sprites.mountains = removeWhiteBG(mImg);
 
     await new Promise(r => setTimeout(r, 30));
