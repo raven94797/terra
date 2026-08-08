@@ -1649,15 +1649,9 @@ function drawCharacter(e, sheet) {
   const x = e.cx - cam.x, y = e.y + e.h - cam.y;
   const h = e.h;
   const walking = e.onGround && Math.abs(e.vx) > 0.5;
-  // 按行走相位选帧：走路时循环 4 个行走帧；站立时用第 0 帧
-  let frameIdx;
-  if (walking) {
-    // 4 帧行走循环：相位 0~2π → 4 帧
-    const cycle = (e.walkPhase / (Math.PI * 2)) % 1;
-    frameIdx = 1 + Math.floor(cycle * 4) % 4; // 帧 1~4
-  } else {
-    frameIdx = 0;
-  }
+  // 按行走相位选帧：sheet 含 N 帧（无独立站立帧），循环全部帧
+  const N = sheet.frames.length;
+  const frameIdx = walking ? Math.floor(((e.walkPhase / (Math.PI * 2)) % 1) * N) % N : 0;
   const frame = sheet.frames[frameIdx];
   // 缩放到实体高度
   const scale = h / sheet.frameH;
@@ -2658,9 +2652,9 @@ async function init() {
     ]);
     setP(0.6, '处理角色动画…');
     // 先缩小大图再抠图，避免同步处理 1536×1024 等大图导致主线程卡死
-    sprites.player = splitSheetFrames(removeWhiteBG(downscaleImage(pWalkImg, 600)), 5);
+    sprites.player = splitSheetFrames(removeWhiteBG(downscaleImage(pWalkImg, 600)), 6);
     setP(0.72);
-    sprites.guide = splitSheetFrames(removeWhiteBG(downscaleImage(gWalkImg, 600)), 5);
+    sprites.guide = splitSheetFrames(removeWhiteBG(downscaleImage(gWalkImg, 600)), 6);
     setP(0.82, '召唤天牛…');
     sprites.longicorn = removeBossBG(downscaleImage(bossImg, 420));
     setP(0.9, '生成松林…');
