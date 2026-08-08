@@ -264,6 +264,52 @@ function cleanPart(c) {
   return trimTransparent(c);
 }
 
+// 裁掉帧底部的纯黑/暗色基线（扫描底部像素，若大面积为暗色则裁掉该行）
+function trimFrameBottom(frameCanvas, maxTrim = 14) {
+  const w = frameCanvas.width, h = frameCanvas.height;
+  const g = frameCanvas.getContext('2d');
+  const id = g.getImageData(0, 0, w, h);
+  const d = id.data;
+  // 从底部向上扫描，找到第一个"含主体像素"的行作为保留行
+  let cutRows = 0;
+  for (let row = h - 1; row >= 0 && cutRows < maxTrim; row--) {
+    let darkCount = 0, total = 0;
+    for (let x = 0; x < w; x++) {
+      const i = (row * w + x) * 4;
+      const r = d[i], gg = d[i + 1], b = d[i + 2], a = d[i + 3];
+      if (a < 30) continue;
+      total++;
+      // 暗色像素：明度 < 80
+      if (r + gg + b < 240) darkCount++;
+    }
+    // 若该行几乎全暗（>60%）且不透明像素较多，认为是基线
+    if (total > w * 0.3 && darkCount / total > 0.6) cutRows++;
+    else break;
+  }
+  if (cutRows === 0) return frameCanvas;
+  const newH = h - cutRows;
+  const out = document.createElement('canvas');
+  out.width = w; out.height = newH;
+  out.getContext('2d').drawImage(frameCanvas, 0, 0, w, newH, 0, 0, w, newH);
+  return out;
+}
+
+// 把 sprite sheet 横向切分为 N 个独立帧 canvas
+// 返回 { frames: [canvas,...], frameW, frameH }
+function splitSheetFrames(img, frameCount, trimBottom = true) {
+  const w = img.width, h = img.height;
+  const frameW = Math.floor(w / frameCount);
+  const frames = [];
+  for (let i = 0; i < frameCount; i++) {
+    const c = document.createElement('canvas');
+    c.width = frameW; c.height = h;
+    c.getContext('2d').drawImage(img, i * frameW, 0, frameW, h, 0, 0, frameW, h);
+    const final = trimBottom ? trimFrameBottom(c) : c;
+    frames.push(final);
+  }
+  return { frames, frameW, frameH: frames[0].height };
+}
+
 // 裁剪掉画布四周的完全透明边距（保留所有不透明像素）
 function trimTransparent(c) {
   const w = c.width, h = c.height;
@@ -1585,49 +1631,27 @@ function drawEntity(e, spr) {
 
 // 程序化人物绘制（含走路摆腿）
 // cfg: { skin, shirt, pants, hair, hat, hatColor, beard }
-function drawCharacter(e, parts) {
-  const x = e.cx - cam.x, y = e.y + e.h - cam.y; // 脚底
+function drawCharacter(e, sheet) {
+  const x = e.cx - cam.x, y = e.y + e.h - cam.y;
   const h = e.h;
   const walking = e.onGround && Math.abs(e.vx) > 0.5;
-  // 缩放：实体高 / sprite原高
-  const scale = h / parts.fullH;
-  const dw = parts.fullW * scale;
-  // 髋部到脚底的距离（像素→世界）
-  const legHpx = parts.fullH - parts.hipY;
-  const legH = legHpx * scale;                    // 腿高（世界）
-  const upperH = h - legH;                        // 上半身高（世界）
-
-  const ph = walking ? e.walkPhase : 0;
-  const legSwing = walking ? Math.sin(ph) : 0;
-  const bob = walking ? Math.abs(Math.sin(ph)) * 3 : 0;
-
+  // 按行走相位选帧：走路时循环 4 个行走帧；站立时用第 0 帧
+  let frameIdx;
+  if (walking) {
+    // 4 帧行走循环：相位 0~2π → 4 帧
+    const cycle = (e.walkPhase / (Math.PI * 2)) % 1;
+    frameIdx = 1 + Math.floor(cycle * 4) % 4; // 帧 1~4
+  } else {
+    frameIdx = 0;
+  }
+  const frame = sheet.frames[frameIdx];
+  // 缩放到实体高度
+  const scale = h / sheet.frameH;
+  const dw = sheet.frameW * scale;
   ctx.save();
-  // 锚点 = 脚底中点，向上为负Y
-  ctx.translate(x, y - bob);
+  ctx.translate(x, y);
   ctx.scale(e.face, 1);
-  ctx.translate(-dw / 2, 0);
-
-  // 左腿原区域相对 sprite 的偏移
-  const lx = parts.leftLegX * scale;
-  const legWW = parts.legW * scale;
-
-  // ---- 左腿：髋部锚点 (lx, -legH) ----
-  ctx.save();
-  ctx.translate(lx, -legH);
-  ctx.rotate(-legSwing * 0.5);
-  ctx.drawImage(parts.leftLeg, 0, 0, legWW, legH);
-  ctx.restore();
-
-  // ---- 右腿 ----
-  ctx.save();
-  ctx.translate(parts.rightLegX * scale, -legH);
-  ctx.rotate(legSwing * 0.5);
-  ctx.drawImage(parts.rightLeg, 0, 0, legWW, legH);
-  ctx.restore();
-
-  // ---- 上半身：从头顶(-h)画到髋部(-legH) ----
-  ctx.drawImage(parts.upper, 0, -h, parts.upperW * scale, upperH);
-
+  ctx.drawImage(frame, -dw / 2, -h, dw, h);
   ctx.restore();
 }
 
@@ -2609,16 +2633,18 @@ async function init() {
     tileTypes.forEach((t, i) => { tex[t] = makeTile(tileImgs[i], TILE_DEF[t].cropTop || 0); });
     setP(0.4, '处理角色素材…');
 
-    const [pImg, gImg, mImg, bossImg] = await Promise.all([
+    const [pImg, gImg, pWalkImg, gWalkImg, mImg, bossImg] = await Promise.all([
       loadImage('assets/sprites/player.png'),
       loadImage('assets/sprites/guide.png'),
+      loadImage('assets/sprites/player_walk.png'),
+      loadImage('assets/sprites/guide_walk.png'),
       loadImage('assets/bg/mountains.png'),
       loadImage('assets/boss/longicorn.png'),
     ]);
     setP(0.6, '抠除背景…');
-    sprites.player = splitSpriteParts(removeWhiteBG(pImg), 0.58, 0.48, 0.28);
+    sprites.player = splitSheetFrames(removeWhiteBG(pWalkImg), 5);
     setP(0.72);
-    sprites.guide = splitSpriteParts(removeWhiteBG(gImg), 0.62, 0.50, 0.32);
+    sprites.guide = splitSheetFrames(removeWhiteBG(gWalkImg), 5);
     setP(0.82, '召唤天牛…');
     sprites.longicorn = removeBossBG(bossImg);
     setP(0.9, '生成松林…');
