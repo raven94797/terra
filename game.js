@@ -1899,23 +1899,28 @@ function drawWorms() {
 function drawLongicorn() {
   if (!longicorn) return;
   const b = longicorn;
+  const spr = sprites.longicorn;
   const x = b.x - cam.x, y = b.y - cam.y;
   const w = b.w, h = b.h;
   const flash = b.flash > 0;
   const face = b.dir > 0 ? 1 : -1;
+  // 悬停轻微浮动
   const hover = Math.sin(b.animT * 3.5) * 2.5;
+
+  // 缩放：保持 sprite 比例，适配天牛碰撞体
+  let dw, dh;
+  if (spr) {
+    const ar = spr.width / spr.height;
+    dw = h * 1.9;         // 比碰撞体更高大，更威压
+    dh = dw / ar;
+    if (dh < h * 1.5) { dh = h * 1.5; dw = dh * ar; }
+  }
 
   ctx.save();
   ctx.translate(x + w / 2, y + h / 2 + hover);
-  ctx.scale(face, 1); // 仅水平镜像，不缩放垂直方向
+  ctx.scale(face, 1);
 
-  const body = flash ? '#fff' : (b.enraged ? '#ff7a3a' : '#c98a4a');
-  const dark = flash ? '#eee' : (b.enraged ? '#a33f18' : '#8a5a2b');
-  const stripe = flash ? '#ddd' : (b.enraged ? '#6e2a10' : '#5a3a18');
-  // 翅膀单独扇动（只有翅膀在动）
-  const wingFlap = Math.sin(b.animT * 24);
-
-  // ---- 狂暴光晕（只用于身体，不缩放） ----
+  // ---- 狂暴光晕 ----
   if (b.enraged && !flash) {
     const auraPulse = 0.6 + 0.4 * Math.sin(b.animT * 8);
     ctx.save();
@@ -1923,108 +1928,37 @@ function drawLongicorn() {
     ctx.shadowColor = '#ff3a1a';
     ctx.shadowBlur = 26;
     ctx.beginPath();
-    ctx.ellipse(0, 0, w * 0.6, h * 0.9, 0, 0, 6.29);
+    ctx.ellipse(0, 0, w * 0.7, h * 0.95, 0, 0, 6.29);
     ctx.fillStyle = '#ff4a1a';
     ctx.fill();
     ctx.restore();
   }
 
-  // ---- 翅膀（动态，仅这里随 wingFlap 摆动） ----
-  ctx.save();
-  ctx.translate(2, -h * 0.1);
-  for (const side of [-1, 1]) {
-    ctx.save();
-    ctx.rotate(wingFlap * 0.9 * side);
-    ctx.translate(0, side * h * 0.05);
-    ctx.globalAlpha = flash ? 0.9 : 0.5;
-    ctx.fillStyle = body;
-    ctx.beginPath();
-    ctx.ellipse(-w * 0.18, side * h * 0.62, w * 0.3, h * 0.55, 0, 0, 6.29);
-    ctx.fill();
-    ctx.fillStyle = stripe;
-    ctx.beginPath();
-    ctx.ellipse(-w * 0.18, side * h * 0.62, w * 0.16, h * 0.4, 0, 0, 6.29);
-    ctx.fill();
-    ctx.restore();
+  if (spr) {
+    // ---- 绘制图片天牛 ----
+    if (flash) {
+      // 受击闪白：白色叠加
+      ctx.save();
+      ctx.globalAlpha = 0.85;
+      ctx.drawImage(spr, -dw / 2, -dh / 2, dw, dh);
+      ctx.globalCompositeOperation = 'source-atop';
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(-dw / 2, -dh / 2, dw, dh);
+      ctx.restore();
+    } else if (b.enraged) {
+      // 狂暴红色调
+      ctx.save();
+      ctx.drawImage(spr, -dw / 2, -dh / 2, dw, dh);
+      ctx.globalCompositeOperation = 'multiply';
+      ctx.fillStyle = '#ff6a3a';
+      ctx.globalAlpha = 0.4;
+      ctx.fillRect(-dw / 2, -dh / 2, dw, dh);
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.restore();
+    } else {
+      ctx.drawImage(spr, -dw / 2, -dh / 2, dw, dh);
+    }
   }
-  ctx.restore();
-
-  // ---- 身体（静止，不缩放） ----
-  // 尾刺
-  ctx.fillStyle = dark;
-  ctx.beginPath();
-  ctx.moveTo(-w / 2 + 2, -h / 2 + 2);
-  ctx.lineTo(-w / 2 - 12, 0);
-  ctx.lineTo(-w / 2 + 2, h / 2 - 2);
-  ctx.closePath();
-  ctx.fill();
-  // 六足（轻微摆动，幅度小）
-  ctx.strokeStyle = dark;
-  ctx.lineWidth = 2.5;
-  ctx.lineCap = 'round';
-  for (let i = 0; i < 3; i++) {
-    const lx = -8 - i * 13;
-    const amp = Math.sin(b.animT * 6 + i * 1.1) * 2;
-    ctx.beginPath();
-    ctx.moveTo(lx, h / 2);
-    ctx.lineTo(lx - 4, h / 2 + 10);
-    ctx.lineTo(lx - 9 + amp, h / 2 + 16);
-    ctx.moveTo(lx, -h / 2);
-    ctx.lineTo(lx - 4, -h / 2 - 10);
-    ctx.lineTo(lx - 9 - amp, -h / 2 - 16);
-    ctx.stroke();
-  }
-  // 胸节
-  ctx.fillStyle = body;
-  roundRectPath(ctx, -w / 2 + 16, -h / 2, w - 34, h, 10);
-  ctx.fill();
-  ctx.fillStyle = flash ? '#fff' : (b.enraged ? '#ffb08a' : '#e8b074');
-  roundRectPath(ctx, -w / 2 + 18, -h / 2 + 2, w - 38, h / 2 - 2, 6);
-  ctx.fill();
-  // 腹部条纹
-  ctx.fillStyle = stripe;
-  const segs = 4, segW = (w - 34) / segs;
-  for (let i = 1; i < segs; i++) ctx.fillRect(-w / 2 + 16 + i * segW - 2, -h / 2 + 1, 3, h - 2);
-  for (let i = 0; i < 3; i++) {
-    ctx.beginPath();
-    ctx.arc(-w / 2 + 28 + i * 11, 0, 2.5, 0, 6.29);
-    ctx.fill();
-  }
-  // 头部 + 复眼 + 口器
-  ctx.fillStyle = dark;
-  ctx.beginPath();
-  ctx.arc(w / 2 - 8, 0, 10, 0, 6.29);
-  ctx.fill();
-  ctx.fillStyle = body;
-  ctx.beginPath();
-  ctx.arc(w / 2 - 6, 0, 6.5, 0, 6.29);
-  ctx.fill();
-  ctx.strokeStyle = '#2a1a10';
-  ctx.lineWidth = 2.5;
-  ctx.beginPath();
-  ctx.moveTo(w / 2, 3); ctx.lineTo(w / 2 + 8, 6);
-  ctx.moveTo(w / 2, -3); ctx.lineTo(w / 2 + 8, -6);
-  ctx.stroke();
-  // 长触角（轻微摆动）
-  const antennae = Math.sin(b.animT * 8);
-  ctx.strokeStyle = '#2a1a10';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(w / 2 - 4, -5);
-  ctx.quadraticCurveTo(w / 2 + 10, -22 + antennae * 2, w / 2 + 26, -18 + antennae * 4);
-  ctx.moveTo(w / 2 - 4, 5);
-  ctx.quadraticCurveTo(w / 2 + 10, 22 - antennae * 2, w / 2 + 26, 18 - antennae * 4);
-  ctx.stroke();
-  // 复眼
-  ctx.fillStyle = '#ffd94d';
-  ctx.beginPath(); ctx.arc(w / 2 - 2, -4, 3.5, 0, 6.29); ctx.fill();
-  ctx.fillStyle = '#ff8a00';
-  ctx.beginPath(); ctx.arc(w / 2 - 2, -4, 1.5, 0, 6.29); ctx.fill();
-  ctx.fillStyle = '#ffd94d';
-  ctx.beginPath(); ctx.arc(w / 2 - 2, 4, 3.5, 0, 6.29); ctx.fill();
-  ctx.fillStyle = '#ff8a00';
-  ctx.beginPath(); ctx.arc(w / 2 - 2, 4, 1.5, 0, 6.29); ctx.fill();
-
   ctx.restore();
 
   // 阴影
