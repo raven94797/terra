@@ -1508,6 +1508,127 @@ function drawEntity(e, spr) {
   ctx.restore();
 }
 
+// 程序化人物绘制（含走路摆腿）
+// cfg: { skin, shirt, pants, hair, hat, hatColor, beard }
+function drawCharacter(e, cfg) {
+  const x = e.cx - cam.x, y = e.y + e.h - cam.y;
+  const w = e.w, h = e.h;
+  const walking = e.onGround && Math.abs(e.vx) > 0.5;
+  const moving = walking;
+  // 摆腿相位（走路时交替前后摆动）
+  const ph = moving ? e.walkPhase : 0;
+  const legSwing = moving ? Math.sin(ph) * 0.7 : 0;
+  const armSwing = moving ? Math.sin(ph) * 0.5 : 0;
+  // 蹲/落地的腿部偏移
+  const land = e.onGround ? 0 : clamp(e.vy * 0.002, -0.1, 0.08);
+  const bob = walking ? Math.abs(Math.sin(ph)) * 2 : 0;
+
+  ctx.save();
+  ctx.translate(x, y - bob);
+  ctx.scale(e.face, 1);
+  ctx.translate(-w / 2, 0);
+
+  // 腿（两条，交替摆动）—— 画在身体下方
+  const legLen = h * 0.32;
+  const hipY = h * 0.72;
+  const footY = h;
+  ctx.lineCap = 'round';
+  // 后腿（摆动反向）
+  drawLeg(legLen, hipY, footY, -legSwing - land, cfg.pants, '#000000');
+  // 前腿
+  drawLeg(legLen, hipY, footY, legSwing - land, cfg.pants, '#000000');
+
+  // 身体（上衣）
+  ctx.fillStyle = cfg.shirt;
+  roundRectPath(ctx, w * 0.18, h * 0.32, w * 0.64, h * 0.44, 4);
+  ctx.fill();
+  ctx.fillStyle = shade(cfg.shirt, -18);
+  roundRectPath(ctx, w * 0.18, h * 0.32, w * 0.64, h * 0.08, 3);
+  ctx.fill();
+
+  // 手臂（摆动）
+  ctx.lineWidth = w * 0.16;
+  ctx.strokeStyle = cfg.shirt;
+  // 后臂
+  ctx.beginPath();
+  ctx.moveTo(w * 0.28, h * 0.4);
+  ctx.lineTo(w * 0.14, h * 0.62 + armSwing * h * 0.16);
+  ctx.stroke();
+  // 前臂（手部肤色）
+  ctx.beginPath();
+  ctx.moveTo(w * 0.72, h * 0.4);
+  ctx.lineTo(w * 0.86, h * 0.62 - armSwing * h * 0.16);
+  ctx.stroke();
+  ctx.fillStyle = cfg.skin;
+  ctx.beginPath();
+  ctx.arc(w * 0.14, h * 0.62 + armSwing * h * 0.16, w * 0.07, 0, 6.29);
+  ctx.arc(w * 0.86, h * 0.62 - armSwing * h * 0.16, w * 0.07, 0, 6.29);
+  ctx.fill();
+
+  // 头部
+  const headR = w * 0.3;
+  const headY = h * 0.22;
+  ctx.fillStyle = cfg.skin;
+  ctx.beginPath();
+  ctx.arc(w * 0.5, headY, headR, 0, 6.29);
+  ctx.fill();
+  // 头发
+  ctx.fillStyle = cfg.hair;
+  ctx.beginPath();
+  ctx.arc(w * 0.5, headY - headR * 0.25, headR * 0.95, Math.PI, 0);
+  ctx.fill();
+  ctx.fillRect(w * 0.5 - headR * 0.95, headY - headR * 0.25, headR * 1.9, headR * 0.3);
+  // 眼睛
+  ctx.fillStyle = '#202020';
+  ctx.beginPath();
+  ctx.arc(w * 0.42, headY + headR * 0.1, headR * 0.12, 0, 6.29);
+  ctx.arc(w * 0.58, headY + headR * 0.1, headR * 0.12, 0, 6.29);
+  ctx.fill();
+
+  // 帽子/胡须等配件
+  if (cfg.beard) {
+    ctx.fillStyle = cfg.beard;
+    roundRectPath(ctx, w * 0.36, headY + headR * 0.35, w * 0.28, h * 0.12, 4);
+    ctx.fill();
+  }
+  if (cfg.hat) {
+    ctx.fillStyle = cfg.hatColor || cfg.hair;
+    ctx.beginPath();
+    ctx.ellipse(w * 0.5, headY - headR * 0.55, headR * 1.3, headR * 0.35, 0, 0, 6.29);
+    ctx.fill();
+    ctx.fillRect(w * 0.5 - headR * 0.9, headY - headR * 1.15, headR * 1.8, headR * 0.7);
+  }
+
+  ctx.restore();
+}
+
+function drawLeg(len, hipY, footY, swing, pants, boot) {
+  ctx.fillStyle = pants;
+  ctx.save();
+  ctx.translate(0, hipY);
+  ctx.rotate(swing * 0.55);
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(len * 0.12, len);
+  ctx.lineTo(len * 0.32, len);
+  ctx.lineTo(len * 0.24, 0);
+  ctx.closePath();
+  ctx.fill();
+  // 靴子
+  ctx.fillStyle = boot;
+  ctx.beginPath();
+  ctx.ellipse(len * 0.22, len + 2, len * 0.22, len * 0.16, 0, 0, 6.29);
+  ctx.fill();
+  ctx.restore();
+}
+
+function shade(color, delta) {
+  const n = parseInt(color.slice(1), 16);
+  let r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  r = clamp(r + delta, 0, 255); g = clamp(g + delta, 0, 255); b = clamp(b + delta, 0, 255);
+  return `rgb(${r},${g},${b})`;
+}
+
 function drawGuideName() {
   ctx.save();
   ctx.font = 'bold 13px "Microsoft YaHei", sans-serif';
@@ -1709,61 +1830,131 @@ function drawWorms() {
 function drawLongicorn() {
   if (!longicorn) return;
   const b = longicorn;
-  const spr = sprites.longicorn;
-  if (!spr) return;
   const x = b.x - cam.x, y = b.y - cam.y;
   const w = b.w, h = b.h;
   const flash = b.flash > 0;
-
-  // 翅膀扇动：垂直轻微缩放产生扑翅感
-  const wingFlap = 1 + Math.sin(b.animT * 22) * 0.08;
-  // 悬停轻微上下浮动
+  const face = b.dir > 0 ? 1 : -1;
   const hover = Math.sin(b.animT * 3.5) * 2.5;
 
   ctx.save();
   ctx.translate(x + w / 2, y + h / 2 + hover);
-  // 镜像：根据方向翻转
-  ctx.scale(b.dir > 0 ? 1 : -1, wingFlap);
+  ctx.scale(face, 1); // 仅水平镜像，不缩放垂直方向
 
-  // 计算目标尺寸：保持 sprite 原比例，适配天牛 w/h
-  const ar = spr.width / spr.height;
-  let dw = w * 1.5, dh = dw / ar;
-  if (dh < h * 1.5) { dh = h * 1.5; dw = dh * ar; }
+  const body = flash ? '#fff' : (b.enraged ? '#ff7a3a' : '#c98a4a');
+  const dark = flash ? '#eee' : (b.enraged ? '#a33f18' : '#8a5a2b');
+  const stripe = flash ? '#ddd' : (b.enraged ? '#6e2a10' : '#5a3a18');
+  // 翅膀单独扇动（只有翅膀在动）
+  const wingFlap = Math.sin(b.animT * 24);
 
-  // 狂暴光晕（底层红色辐射）
+  // ---- 狂暴光晕（只用于身体，不缩放） ----
   if (b.enraged && !flash) {
-    ctx.save();
     const auraPulse = 0.6 + 0.4 * Math.sin(b.animT * 8);
-    ctx.globalAlpha = 0.55 * auraPulse;
+    ctx.save();
+    ctx.globalAlpha = 0.5 * auraPulse;
     ctx.shadowColor = '#ff3a1a';
-    ctx.shadowBlur = 30;
-    ctx.drawImage(spr, -dw / 2, -dh / 2, dw, dh);
+    ctx.shadowBlur = 26;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, w * 0.6, h * 0.9, 0, 0, 6.29);
+    ctx.fillStyle = '#ff4a1a';
+    ctx.fill();
     ctx.restore();
   }
 
-  // 主体绘制
-  if (flash) {
-    // 受伤闪白：用 globalCompositeOperation 实现变白
+  // ---- 翅膀（动态，仅这里随 wingFlap 摆动） ----
+  ctx.save();
+  ctx.translate(2, -h * 0.1);
+  for (const side of [-1, 1]) {
     ctx.save();
-    ctx.globalAlpha = 0.95;
-    ctx.drawImage(spr, -dw / 2, -dh / 2, dw, dh);
+    ctx.rotate(wingFlap * 0.9 * side);
+    ctx.translate(0, side * h * 0.05);
+    ctx.globalAlpha = flash ? 0.9 : 0.5;
+    ctx.fillStyle = body;
+    ctx.beginPath();
+    ctx.ellipse(-w * 0.18, side * h * 0.62, w * 0.3, h * 0.55, 0, 0, 6.29);
+    ctx.fill();
+    ctx.fillStyle = stripe;
+    ctx.beginPath();
+    ctx.ellipse(-w * 0.18, side * h * 0.62, w * 0.16, h * 0.4, 0, 0, 6.29);
+    ctx.fill();
     ctx.restore();
-  } else {
-    // 狂暴：叠加红色调
-    if (b.enraged) {
-      ctx.save();
-      ctx.globalAlpha = 1;
-      ctx.drawImage(spr, -dw / 2, -dh / 2, dw, dh);
-      ctx.globalCompositeOperation = 'multiply';
-      ctx.fillStyle = '#ff6a3a';
-      ctx.globalAlpha = 0.45;
-      ctx.fillRect(-dw / 2, -dh / 2, dw, dh);
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.restore();
-    } else {
-      ctx.drawImage(spr, -dw / 2, -dh / 2, dw, dh);
-    }
   }
+  ctx.restore();
+
+  // ---- 身体（静止，不缩放） ----
+  // 尾刺
+  ctx.fillStyle = dark;
+  ctx.beginPath();
+  ctx.moveTo(-w / 2 + 2, -h / 2 + 2);
+  ctx.lineTo(-w / 2 - 12, 0);
+  ctx.lineTo(-w / 2 + 2, h / 2 - 2);
+  ctx.closePath();
+  ctx.fill();
+  // 六足（轻微摆动，幅度小）
+  ctx.strokeStyle = dark;
+  ctx.lineWidth = 2.5;
+  ctx.lineCap = 'round';
+  for (let i = 0; i < 3; i++) {
+    const lx = -8 - i * 13;
+    const amp = Math.sin(b.animT * 6 + i * 1.1) * 2;
+    ctx.beginPath();
+    ctx.moveTo(lx, h / 2);
+    ctx.lineTo(lx - 4, h / 2 + 10);
+    ctx.lineTo(lx - 9 + amp, h / 2 + 16);
+    ctx.moveTo(lx, -h / 2);
+    ctx.lineTo(lx - 4, -h / 2 - 10);
+    ctx.lineTo(lx - 9 - amp, -h / 2 - 16);
+    ctx.stroke();
+  }
+  // 胸节
+  ctx.fillStyle = body;
+  roundRectPath(ctx, -w / 2 + 16, -h / 2, w - 34, h, 10);
+  ctx.fill();
+  ctx.fillStyle = flash ? '#fff' : (b.enraged ? '#ffb08a' : '#e8b074');
+  roundRectPath(ctx, -w / 2 + 18, -h / 2 + 2, w - 38, h / 2 - 2, 6);
+  ctx.fill();
+  // 腹部条纹
+  ctx.fillStyle = stripe;
+  const segs = 4, segW = (w - 34) / segs;
+  for (let i = 1; i < segs; i++) ctx.fillRect(-w / 2 + 16 + i * segW - 2, -h / 2 + 1, 3, h - 2);
+  for (let i = 0; i < 3; i++) {
+    ctx.beginPath();
+    ctx.arc(-w / 2 + 28 + i * 11, 0, 2.5, 0, 6.29);
+    ctx.fill();
+  }
+  // 头部 + 复眼 + 口器
+  ctx.fillStyle = dark;
+  ctx.beginPath();
+  ctx.arc(w / 2 - 8, 0, 10, 0, 6.29);
+  ctx.fill();
+  ctx.fillStyle = body;
+  ctx.beginPath();
+  ctx.arc(w / 2 - 6, 0, 6.5, 0, 6.29);
+  ctx.fill();
+  ctx.strokeStyle = '#2a1a10';
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.moveTo(w / 2, 3); ctx.lineTo(w / 2 + 8, 6);
+  ctx.moveTo(w / 2, -3); ctx.lineTo(w / 2 + 8, -6);
+  ctx.stroke();
+  // 长触角（轻微摆动）
+  const antennae = Math.sin(b.animT * 8);
+  ctx.strokeStyle = '#2a1a10';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(w / 2 - 4, -5);
+  ctx.quadraticCurveTo(w / 2 + 10, -22 + antennae * 2, w / 2 + 26, -18 + antennae * 4);
+  ctx.moveTo(w / 2 - 4, 5);
+  ctx.quadraticCurveTo(w / 2 + 10, 22 - antennae * 2, w / 2 + 26, 18 - antennae * 4);
+  ctx.stroke();
+  // 复眼
+  ctx.fillStyle = '#ffd94d';
+  ctx.beginPath(); ctx.arc(w / 2 - 2, -4, 3.5, 0, 6.29); ctx.fill();
+  ctx.fillStyle = '#ff8a00';
+  ctx.beginPath(); ctx.arc(w / 2 - 2, -4, 1.5, 0, 6.29); ctx.fill();
+  ctx.fillStyle = '#ffd94d';
+  ctx.beginPath(); ctx.arc(w / 2 - 2, 4, 3.5, 0, 6.29); ctx.fill();
+  ctx.fillStyle = '#ff8a00';
+  ctx.beginPath(); ctx.arc(w / 2 - 2, 4, 1.5, 0, 6.29); ctx.fill();
 
   ctx.restore();
 
@@ -2379,9 +2570,15 @@ function frame(dt, ts) {
   drawWorms();
   drawLongicorn();
   drawBossShots();
-  drawEntity(guide, sprites.guide);
+  drawCharacter(guide, {
+    skin: '#e8b57a', shirt: '#8a5a2b', pants: '#5a3a18',
+    hair: '#b9b9c0', hat: true, hatColor: '#6e4520', beard: '#d8d8dd',
+  });
   drawGuideName();
-  drawEntity(player, sprites.player);
+  drawCharacter(player, {
+    skin: '#f0c492', shirt: '#5a8a4a', pants: '#4a3624',
+    hair: '#3a2a18', hat: true, hatColor: '#7a9a4a', beard: null,
+  });
   drawDrone();
   drawGuardDrone();
   drawProbioticShots();
