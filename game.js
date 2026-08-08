@@ -65,6 +65,17 @@ const TILE_DEF = {
 };
 const HOTBAR_ORDER = [T.GRASS, T.DIRT, T.STONE, T.WOOD, T.LEAVES, T.SAND];
 
+// ---------------- 工具系统 ----------------
+const TOOL_PICKAXE = 'pickaxe';
+const TOOL_REMOTE = 'remote';
+const TOOL_DEFS = {
+  [TOOL_PICKAXE]: { name: '稿子', icon: 'pickaxe' },
+  [TOOL_REMOTE]:  { name: '遥控器', icon: 'remote' },
+};
+let ownedTools = [TOOL_PICKAXE];     // 初始只有稿子
+let selTool = TOOL_PICKAXE;          // 当前手持工具
+let remoteGiven = false;             // 向导是否已交付遥控器
+
 // ---------------- 全局状态 ----------------
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
@@ -81,10 +92,8 @@ const surfaceH = new Int16Array(WORLD_W);
 const tex = {};
 const sprites = {};
 const inv = {};
-HOTBAR_ORDER.forEach(t => inv[t] = 0);
-inv[T.DIRT] = 30; inv[T.WOOD] = 20; inv[T.STONE] = 20; inv[T.SAND] = 10; inv[T.GRASS] = 10; inv[T.LEAVES] = 10;
+HOTBAR_ORDER.forEach(t => inv[t] = 0); // 背包：挖掘所得方块
 
-let selSlot = 0;
 let timeOfDay = 0.32;
 const cam = { x: 0, y: 0 };
 const particles = [];
@@ -102,7 +111,7 @@ let shake = 0;
 let spawnX = 0, spawnY = 0;
 
 // ---------------- 无人机 / 益生菌 ----------------
-const drone = { x: 0, y: 0, vx: 0, vy: 0, rot: 0, rotor: 0, cd: 0 };
+const drone = { x: 0, y: 0, vx: 0, vy: 0, rot: 0, rotor: 0, cd: 0, deployed: false };
 let proBiotic = 0;          // 益生菌能量
 const MAX_PROBIOTIC = 6;
 const probioticShots = [];   // 益生菌弹
@@ -125,22 +134,22 @@ let dialogCooldown = 0;      // 防止按住E连点
 let talkHint = 0;            // 提示"按E交谈"闪烁计时
 let dialogTypewriter = 0;    // 打字机效果进度
 const DIALOG = {
-  intro: [                    // 初始（未领取无人机）
+  intro: [                    // 初始（未领取遥控器）
     '呼……终于找到你了。我是这片松林的守林人。',
-    '你看，四周的松树正在枯黄——那是松树线虫病在作祟。',
-    '线虫钻入树干啃食，还有天牛在帮着传播它们。',
-    '我们得趁灾难扩大前阻止它。我能为你做点什么吗？',
+    '你手里的稿子可派上用场——挖开泥土岩石，收集方块备用。',
+    '等等，我把这个遥控器和一点益生菌交给你。',
+    '靠近我就能领取。拿遥控器时按右键，就能召唤无人机了。',
   ],
-  ready: [                    // 已领取无人机，正在净化线虫
-    '很好！你已经拿到无人机了。',
-    '按住鼠标左键，无人机就会向准星方向喷洒益生菌。',
-    '地面发光的绿色菌落可以补充益生菌能量。',
-    '等净化足够多的线虫，真正的幕后黑手——松墨天牛就会出现。',
+  ready: [                    // 已领取遥控器，正在净化线虫
+    '很好！你拿到遥控器和益生菌了。',
+    '拿着遥控器，按右键召唤无人机；再按一次就能收起它。',
+    '无人机召唤后，按住鼠标左键就会喷洒益生菌净化害虫。',
+    '切换到稿子可以挖方块、放方块。等净化足够多线虫，松墨天牛就会出现！',
   ],
   boss: [                     // 天牛出现
     '小心！那就是传播线虫的松墨天牛！',
     '它会不断释放小线虫，别被围住了。',
-    '集中益生菌火力，命中它的身体削弱它！',
+    '保持遥控器在手，无人机持续发射益生菌命中它的身体！',
     '半血之后它会进入狂暴，务必走位躲开！',
   ],
   victory: [                  // 胜利后
@@ -455,7 +464,12 @@ window.addEventListener('keydown', e => {
     if (el) el.style.display = helpVisible ? 'block' : 'none';
   }
   const n = parseInt(k, 10);
-  if (n >= 1 && n <= HOTBAR_ORDER.length) selSlot = n - 1;
+  if (n >= 1 && n <= ownedTools.length) selTool = ownedTools[n - 1];
+  // 滚轮已处理；这里也允许用 Q 切换
+  if (k === 'q') {
+    const idx = ownedTools.indexOf(selTool);
+    selTool = ownedTools[(idx + 1) % ownedTools.length];
+  }
 });
 window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
 window.addEventListener('mousedown', e => {
@@ -467,6 +481,127 @@ window.addEventListener('mouseup', e => {
   if (e.button === 2) mouse.right = false;
 });
 window.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+
+// ---------------- 挖掘 / 放置 / 工具使用 ----------------
+const REACH = 5.5 * TILE;
+const mining = { tx: -1, ty: -1, progress: 0 };
+let placeCooldown = 0;
+let remoteCooldown = 0;
+
+function mouseTile() {
+  const wx = mouse.x + cam.x, wy = mouse.y + cam.y;
+  return { tx: Math.floor(wx / TILE), ty: Math.floor(wy / TILE), wx, wy };
+}
+
+function inReach(tx, ty) {
+  const cx = (tx + 0.5) * TILE, cy = (ty + 0.5) * TILE;
+  const dx = cx - player.cx, dy = cy - (player.y + player.h * 0.45);
+  return dx * dx + dy * dy <= REACH * REACH;
+}
+
+function spawnBreakParticles(tx, ty, type) {
+  const src = tex[type];
+  if (!src) return;
+  for (let i = 0; i < 9; i++) {
+    const sx = ((Math.random() * 3) | 0) * 16 + ((Math.random() < 0.5) ? 64 : 0);
+    const sy = ((Math.random() * 3) | 0) * 16 + ((Math.random() < 0.5) ? 64 : 0);
+    particles.push({
+      x: tx * TILE + TILE / 2 + (Math.random() - 0.5) * TILE * 0.6,
+      y: ty * TILE + TILE / 2 + (Math.random() - 0.5) * TILE * 0.6,
+      vx: (Math.random() - 0.5) * 5,
+      vy: -Math.random() * 5 - 1,
+      life: 0.55 + Math.random() * 0.4,
+      t: 0,
+      src, sx, sy, size: 9 + Math.random() * 5,
+      spin: (Math.random() - 0.5) * 0.3,
+      rot: Math.random() * 6.28,
+    });
+  }
+}
+
+// 切换遥控器：召唤/收起无人机
+function toggleDrone() {
+  if (!remoteGiven) return;
+  drone.deployed = !drone.deployed;
+  if (drone.deployed) {
+    drone.x = player.cx;
+    drone.y = player.y - 60;
+    sfxPickup();
+  } else {
+    sfxPlace();
+  }
+}
+
+function updateTools(dt) {
+  placeCooldown -= dt;
+  remoteCooldown -= dt;
+  const { tx, ty } = mouseTile();
+  const target = getTile(tx, ty);
+  const canReach = inReach(tx, ty);
+
+  if (selTool === TOOL_REMOTE) {
+    // 遥控器：右键召唤/收起无人机
+    if (mouse.right && remoteCooldown <= 0 && !dead) {
+      toggleDrone();
+      remoteCooldown = 0.3;
+    }
+    return;
+  }
+
+  // 稿子：左键挖掘
+  if (mouse.left && canReach && target !== T.AIR && !dead) {
+    if (mining.tx !== tx || mining.ty !== ty) {
+      mining.tx = tx; mining.ty = ty; mining.progress = 0;
+    }
+    const def = TILE_DEF[target];
+    mining.progress += dt / def.hard;
+    if (Math.random() < dt * 14) sfxDig();
+    if (Math.random() < dt * 30) {
+      const src = tex[target];
+      if (src) particles.push({
+        x: (tx + 0.5) * TILE + (Math.random() - 0.5) * TILE * 0.7,
+        y: (ty + 0.5) * TILE + (Math.random() - 0.5) * TILE * 0.7,
+        vx: (Math.random() - 0.5) * 3, vy: -Math.random() * 3,
+        life: 0.4, t: 0, src, sx: 32, sy: 32, size: 6 + Math.random() * 4,
+        spin: (Math.random() - 0.5) * 0.4, rot: Math.random() * 6.28,
+      });
+    }
+    if (mining.progress >= 1) {
+      setTile(tx, ty, T.AIR);
+      inv[target] = (inv[target] || 0) + 1;  // 挖下的方块进背包
+      spawnBreakParticles(tx, ty, target);
+      sfxDig();
+      mining.progress = 0;
+      mining.tx = -1;
+    }
+  } else {
+    mining.progress = 0;
+    mining.tx = -1;
+  }
+
+  // 稿子：右键放置背包中的方块
+  if (mouse.right && canReach && target === T.AIR && placeCooldown <= 0 && !dead) {
+    // 选一个背包里有数量的方块放置
+    const type = HOTBAR_ORDER.find(t => inv[t] > 0);
+    if (type !== undefined) {
+      let adjacent = false;
+      for (let dy = -1; dy <= 1 && !adjacent; dy++)
+        for (let dx = -1; dx <= 1 && !adjacent; dx++)
+          if (dx || dy) if (isSolidType(getTile(tx + dx, ty + dy))) adjacent = true;
+      if (adjacent) {
+        const px = tx * TILE, py = ty * TILE;
+        const overlapsPlayer = px < player.x + player.w && px + TILE > player.x && py < player.y + player.h && py + TILE > player.y;
+        const overlapsGuide = px < guide.x + guide.w && px + TILE > guide.x && py < guide.y + guide.h && py + TILE > guide.y;
+        if (!overlapsPlayer && !overlapsGuide) {
+          setTile(tx, ty, type);
+          inv[type]--;
+          sfxPlace();
+          placeCooldown = 0.16;
+        }
+      }
+    }
+  }
+}
 
 // ---------------- 玩家 ----------------
 const player = new Entity(0, 0, 26, 92);
@@ -515,11 +650,15 @@ function updateGuide(dt) {
   if (Math.abs(distP) < TILE * 3.5) {
     guide.face = distP > 0 ? 1 : -1;
     guide.vx = lerp(guide.vx, 0, 0.3);
-    // 交付无人机
+    // 靠近守林人：交付遥控器与初始益生菌，开始任务
     if (!missionStarted && distP >= -TILE * 2) {
       missionStarted = true;
+      remoteGiven = true;
+      if (!ownedTools.includes(TOOL_REMOTE)) ownedTools.push(TOOL_REMOTE);
+      if (proBiotic < MAX_PROBIOTIC) proBiotic = Math.max(proBiotic, 3); // 初始益生菌
       sfxPickup();
-      drone.given = true;
+      updateHotbarDOM();
+      refreshHotbarIcons();
     }
   } else {
     if (ai.timer <= 0) {
@@ -808,17 +947,22 @@ function bossDefeated() {
 function updateDrone(dt) {
   drone.rotor += dt * 40;
   drone.cd -= dt;
-  drone.given = missionStarted && !victory;
 
-  if (!drone.given) {
-    // 尚未获得无人机：待命在向导旁
+  if (!remoteGiven) {
+    // 尚未获得遥控器：无人机待命在向导旁（展示用）
     drone.x = guide.cx;
     drone.y = guide.y - 60;
     drone.rot = Math.sin(performance.now() * 0.002) * 0.1;
     return;
   }
 
-  // 跟随玩家，悬浮在玩家头顶
+  if (!drone.deployed) {
+    // 已收起：无人机隐藏，仅记录位置
+    drone.rot = Math.sin(performance.now() * 0.002) * 0.1;
+    return;
+  }
+
+  // 召唤中：跟随玩家，悬浮在玩家头顶
   const tx = player.cx;
   const ty = player.y + player.h * 0.18 - 60;
   drone.vx = lerp(drone.vx, (tx - drone.x) * 0.1, 0.1);
@@ -827,8 +971,8 @@ function updateDrone(dt) {
   drone.y += drone.vy * dt;
   drone.rot = clamp((tx - drone.x) * 0.01, -0.25, 0.25);
 
-  // 发射益生菌（鼠标左键）
-  if ((mouse.left || keys['j'] || keys['q']) && drone.cd <= 0 && proBiotic > 0 && !dead) {
+  // 发射益生菌（鼠标左键，仅遥控器模式下无人机已召唤）
+  if (selTool === TOOL_REMOTE && mouse.left && drone.cd <= 0 && proBiotic > 0 && !dead) {
     const wx = mouse.x + cam.x, wy = mouse.y + cam.y;
     const dx = wx - drone.x, dy = wy - drone.y;
     const len = Math.hypot(dx, dy) || 1;
@@ -881,8 +1025,10 @@ function updateDrone(dt) {
       probioticShots.splice(i, 1);
     }
   }
+}
 
-  // 益生菌菌落拾取
+// 益生菌菌落拾取（无论无人机是否召唤都可用）
+function updateProbioticPickup(dt) {
   for (const p of probioticPickups) {
     if (p.taken) { p.respawn -= dt; if (p.respawn <= 0) { p.taken = false; p.respawn = 8; } continue; }
     if (!missionStarted) continue;
@@ -1267,6 +1413,25 @@ function wrapText(text, x, y, maxW, lineH) {
   if (line) ctx.fillText(line, x, curY);
 }
 
+function drawMiningCrack() {
+  if (mining.tx < 0 || mining.progress <= 0) return;
+  const px = mining.tx * TILE - cam.x, py = mining.ty * TILE - cam.y;
+  const stage = Math.min(3, (mining.progress * 4) | 0);
+  const r = mulberry32(mining.tx * 131 + mining.ty * 17);
+  ctx.save();
+  ctx.strokeStyle = `rgba(20,16,10,${0.35 + stage * 0.18})`;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let i = 0; i < 3 + stage * 3; i++) {
+    const x1 = px + r() * TILE, y1 = py + r() * TILE;
+    const x2 = x1 + (r() - 0.5) * TILE * 0.5, y2 = y1 + (r() - 0.5) * TILE * 0.5;
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
 function drawParticles() {
   for (const p of particles) {
     const a = 1 - p.t / p.life;
@@ -1609,6 +1774,25 @@ function drawHpUI() {
     roundRectPath(ctx, bx + 2, by + 2, (barW - 4) * fill, 10, 5);
     ctx.fill();
   }
+
+  // 当前工具 + 无人机状态
+  ctx.font = 'bold 14px "Microsoft YaHei", sans-serif';
+  ctx.fillStyle = '#cfd6ff';
+  ctx.fillText('工具：' + (TOOL_DEFS[selTool] ? TOOL_DEFS[selTool].name : selTool), X + 6, Y + 76);
+  if (remoteGiven) {
+    ctx.fillStyle = drone.deployed ? '#b7ff5e' : '#8a94a8';
+    ctx.fillText('无人机：' + (drone.deployed ? '召唤中' : '已收起'), X + 6, Y + 96);
+  }
+  // 背包方块
+  ctx.font = '13px "Microsoft YaHei", sans-serif';
+  ctx.fillStyle = '#eef2ff';
+  let itemText = '';
+  for (const t of HOTBAR_ORDER) {
+    if (inv[t] > 0) itemText += `${TILE_DEF[t].name}×${inv[t]}  `;
+  }
+  if (!itemText) itemText = '背包：空（用稿子挖掘收集方块）';
+  else itemText = '背包：' + itemText;
+  ctx.fillText(itemText, X + 6, Y + 120);
   ctx.restore();
 }
 
@@ -1698,45 +1882,94 @@ function drawObjective() {
   if (dialogOpen) {
     // 对话打开时隐藏
   } else if (!missionStarted) {
-    ctx.fillText('靠近守林人按 E 交谈，领取无人机', VW / 2, VH - 80);
-  } else if (!bossActive && !victory) {
-    ctx.fillText('发射益生菌净化线虫（鼠标左键）', VW / 2, VH - 80);
+    ctx.fillText('靠近守林人领取遥控器与益生菌', VW / 2, VH - 80);
+  } else if (selTool === TOOL_REMOTE && !drone.deployed) {
+    ctx.fillText('拿遥控器按右键召唤无人机', VW / 2, VH - 80);
+  } else if (selTool === TOOL_REMOTE && drone.deployed && !victory) {
+    ctx.fillText('按住鼠标左键喷洒益生菌净化线虫', VW / 2, VH - 80);
+  } else if (selTool === TOOL_PICKAXE) {
+    ctx.fillText('左键挖掘方块，右键放置背包中的方块', VW / 2, VH - 80);
   }
   ctx.restore();
 }
 
-// ---------------- 热键栏 UI ----------------
+// ---------------- 热键栏 UI（工具） ----------------
 const hotbarEl = document.getElementById('hotbar');
 const slotEls = [];
 function buildHotbar() {
-  HOTBAR_ORDER.forEach((t, i) => {
+  // 工具槽由 DOM 动态重建（随拥有的工具变化）
+  updateHotbarDOM();
+}
+function updateHotbarDOM() {
+  hotbarEl.innerHTML = '';
+  slotEls.length = 0;
+  ownedTools.forEach((tool, i) => {
     const slot = document.createElement('div');
     slot.className = 'slot';
     const num = document.createElement('span');
     num.className = 'num'; num.textContent = i + 1;
     const cv = document.createElement('canvas');
     cv.width = cv.height = 64;
-    const cnt = document.createElement('span');
-    cnt.className = 'count';
-    slot.appendChild(num); slot.appendChild(cv); slot.appendChild(cnt);
+    slot.appendChild(num); slot.appendChild(cv);
     hotbarEl.appendChild(slot);
-    slotEls.push({ slot, cv, cnt, type: t });
+    slotEls.push({ slot, cv, tool });
   });
+}
+// 绘制工具图标
+function drawToolIcon(g, tool) {
+  g.clearRect(0, 0, 64, 64);
+  g.imageSmoothingEnabled = false;
+  if (tool === TOOL_PICKAXE) {
+    // 稿子：棕色柄 + 金属头
+    g.fillStyle = '#8a5a2b';
+    g.fillRect(16, 28, 8, 30);
+    g.fillStyle = '#6e4520';
+    g.fillRect(16, 30, 8, 3);
+    g.fillStyle = '#9aa3ad';
+    g.fillRect(8, 18, 24, 8);
+    g.fillRect(8, 18, 5, 16);
+    g.fillRect(27, 18, 5, 16);
+    g.fillStyle = '#c7ccd4';
+    g.fillRect(8, 18, 24, 4);
+  } else if (tool === TOOL_REMOTE) {
+    // 遥控器：长方形机身 + 按钮 + 天线
+    g.fillStyle = '#2b3a4a';
+    g.fillRect(16, 14, 32, 40);
+    g.fillStyle = '#3f5a72';
+    g.fillRect(16, 14, 32, 8);
+    g.fillStyle = '#d34d4d';
+    g.beginPath(); g.arc(26, 32, 5, 0, 6.29); g.fill();
+    g.fillStyle = '#4dd84d';
+    g.beginPath(); g.arc(38, 32, 5, 0, 6.29); g.fill();
+    g.fillStyle = '#8aa0b5';
+    g.fillRect(24, 46, 16, 4);
+    g.fillStyle = '#b7ff5e';
+    g.fillRect(43, 8, 3, 12);
+    g.fillStyle = '#9ae66a';
+    g.beginPath(); g.arc(44.5, 8, 3, 0, 6.29); g.fill();
+  }
 }
 function refreshHotbarIcons() {
   for (const s of slotEls) {
-    const t = tex[s.type];
-    if (!t) continue;
-    const g = s.cv.getContext('2d');
-    g.imageSmoothingEnabled = false;
-    g.drawImage(t, 0, 0, 64, 64, 0, 0, 64, 64);
+    drawToolIcon(s.cv.getContext('2d'), s.tool);
   }
 }
 function updateHotbar() {
+  // 同步工具列表（遥控器可能刚获得）
+  let changed = false;
+  if (!remoteGiven && ownedTools.includes(TOOL_REMOTE)) { /* 不应发生 */ }
+  if (remoteGiven && !ownedTools.includes(TOOL_REMOTE)) {
+    ownedTools.push(TOOL_REMOTE);
+    changed = true;
+  }
+  if (changed) {
+    updateHotbarDOM();
+    refreshHotbarIcons();
+    if (!ownedTools.includes(selTool)) selTool = ownedTools[0];
+  }
   for (let i = 0; i < slotEls.length; i++) {
     const s = slotEls[i];
-    s.slot.classList.toggle('sel', i === selSlot);
-    s.cnt.textContent = inv[s.type] || 0;
+    s.slot.classList.toggle('sel', s.tool === selTool);
   }
 }
 
@@ -1781,9 +2014,11 @@ function loop(ts) {
   updatePlayer(dt);
   updateGuide(dt);
   updateDialog(dt);
+  updateTools(dt);
   updateWorms(dt);
   updateBoss(dt);
   updateDrone(dt);
+  updateProbioticPickup(dt);
   updateParticles(dt);
   updateDeath(dt);
   updateVictory(dt);
@@ -1809,6 +2044,7 @@ function loop(ts) {
   drawProbioticShots();
   drawProbioticPickups();
   drawParticles();
+  drawMiningCrack();
   drawNightOverlay(s);
   ctx.restore();
   drawTalkHint();
