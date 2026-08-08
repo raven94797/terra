@@ -249,28 +249,79 @@ function removeWhiteBG(img, threshold = 232) {
   return out;
 }
 
+// 清理部件：去除残留的纯白背景（含两腿间空隙的白），再裁剪透明边距
+function cleanPart(c) {
+  const w = c.width, h = c.height;
+  const g = c.getContext('2d');
+  const id = g.getImageData(0, 0, w, h);
+  const d = id.data;
+  for (let i = 0; i < w * h; i++) {
+    const r = d[i * 4], gg = d[i * 4 + 1], b = d[i * 4 + 2];
+    // 纯白/接近纯白 → 透明
+    if (r > 240 && gg > 240 && b > 240) d[i * 4 + 3] = 0;
+  }
+  g.putImageData(id, 0, 0);
+  return trimTransparent(c);
+}
+
+// 裁剪掉画布四周的完全透明边距（保留所有不透明像素）
+function trimTransparent(c) {
+  const w = c.width, h = c.height;
+  const g = c.getContext('2d');
+  const id = g.getImageData(0, 0, w, h);
+  const d = id.data;
+  let minX = w, minY = h, maxX = -1, maxY = -1;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (d[(y * w + x) * 4 + 3] > 8) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (maxX < 0) return c;
+  const cw = maxX - minX + 1, ch = maxY - minY + 1;
+  const out = document.createElement('canvas');
+  out.width = cw; out.height = ch;
+  out.getContext('2d').drawImage(c, minX, minY, cw, ch, 0, 0, cw, ch);
+  return out;
+}
+
 // 把人物 sprite 从髋部切分为上半身 + 左腿 + 右腿
 // hipYFrac: 髋部相对 sprite 高度的比例（0~1）
 // midXFrac: 左右腿分界线相对 sprite 宽度的比例
 // legFrac: 单腿宽度相对 sprite 宽度的比例
 function splitSpriteParts(img, hipYFrac, midXFrac, legFrac) {
   const w = img.width, h = img.height;
-  const hipY = Math.round(h * hipYFrac);
+  const hipY = Math.round(h * hipYFrac);       // 头顶到髋部的像素
   const midX = Math.round(w * midXFrac);
   const legW = Math.round(w * legFrac);
   const upperH = hipY;
-  const legH = h - hipY;
+  const legH = h - hipY;                        // 脚底到髋部
+  // 裁剪并记录裁剪偏移（用于绘制时对齐）
   const mk = (sw, sh, sx, sy) => {
     const c = document.createElement('canvas');
     c.width = sw; c.height = sh;
     c.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
-    return c;
+    const trimmed = cleanPart(c);
+    // 计算裁剪后内容相对原区域的偏移
+    return { canvas: trimmed, offsetX: 0, offsetY: 0 };
   };
+  const upper = mk(w, upperH, 0, 0);
+  const leftLeg = mk(legW, legH, midX - legW, hipY);
+  const rightLeg = mk(legW, legH, midX, hipY);
   return {
-    upper: mk(w, upperH, 0, 0),
-    leftLeg:  mk(legW, legH, midX - legW, hipY),
-    rightLeg: mk(legW, legH, midX, hipY),
-    hipY, midX, legW,
+    upper: upper.canvas,
+    leftLeg: leftLeg.canvas,
+    rightLeg: rightLeg.canvas,
+    // 布局信息（基于原始未裁剪区域，单位 = 原始像素）
+    upperW: w, upperH,                // 上半身区域
+    leftLegX: midX - legW,            // 左腿原区域左边缘
+    rightLegX: midX,                  // 右腿原区域左边缘
+    legW, legH,
+    hipY,                             // 头顶到髋部
     fullW: w, fullH: h,
   };
 }
@@ -1535,47 +1586,47 @@ function drawEntity(e, spr) {
 // 程序化人物绘制（含走路摆腿）
 // cfg: { skin, shirt, pants, hair, hat, hatColor, beard }
 function drawCharacter(e, parts) {
-  const x = e.cx - cam.x, y = e.y + e.h - cam.y;
-  const w = e.w, h = e.h;
+  const x = e.cx - cam.x, y = e.y + e.h - cam.y; // 脚底
+  const h = e.h;
   const walking = e.onGround && Math.abs(e.vx) > 0.5;
-  // sprite 原尺寸
-  const sw = parts.fullW, sh = parts.fullH;
-  // 缩放到实体尺寸（保持比例），实际显示高度 = h
-  const scale = h / sh;
-  const dw = sw * scale;
-  // 髋部坐标（在世界绘制尺度下的 Y 与 X）
-  const hipYWorld = (parts.hipY / sh) * h;
-  const midXWorld = (parts.midX / sw) * dw;
-  const legWW = (parts.legW / sw) * dw;
+  // 缩放：实体高 / sprite原高
+  const scale = h / parts.fullH;
+  const dw = parts.fullW * scale;
+  // 髋部到脚底的距离（像素→世界）
+  const legHpx = parts.fullH - parts.hipY;
+  const legH = legHpx * scale;                    // 腿高（世界）
+  const upperH = h - legH;                        // 上半身高（世界）
 
   const ph = walking ? e.walkPhase : 0;
   const legSwing = walking ? Math.sin(ph) : 0;
-  // 走路时身体轻微上下浮动
   const bob = walking ? Math.abs(Math.sin(ph)) * 3 : 0;
 
   ctx.save();
-  // 脚底中点为锚点
+  // 锚点 = 脚底中点，向上为负Y
   ctx.translate(x, y - bob);
   ctx.scale(e.face, 1);
   ctx.translate(-dw / 2, 0);
 
-  // ---- 左腿（摆动，相位 0） ----
+  // 左腿原区域相对 sprite 的偏移
+  const lx = parts.leftLegX * scale;
+  const legWW = parts.legW * scale;
+
+  // ---- 左腿：髋部锚点 (lx, -legH) ----
   ctx.save();
-  // 髋部锚点 = 左腿根部 = (midX - legW) 在 sprite 中 → 缩放后 (midXWorld - legWW)
-  ctx.translate(midXWorld - legWW, hipYWorld);
-  ctx.rotate(-legSwing * 0.45);
-  ctx.drawImage(parts.leftLeg, 0, 0, legWW, h - hipYWorld);
+  ctx.translate(lx, -legH);
+  ctx.rotate(-legSwing * 0.5);
+  ctx.drawImage(parts.leftLeg, 0, 0, legWW, legH);
   ctx.restore();
 
-  // ---- 右腿（摆动，反相） ----
+  // ---- 右腿 ----
   ctx.save();
-  ctx.translate(midXWorld, hipYWorld);
-  ctx.rotate(legSwing * 0.45);
-  ctx.drawImage(parts.rightLeg, 0, 0, legWW, h - hipYWorld);
+  ctx.translate(parts.rightLegX * scale, -legH);
+  ctx.rotate(legSwing * 0.5);
+  ctx.drawImage(parts.rightLeg, 0, 0, legWW, legH);
   ctx.restore();
 
-  // ---- 上半身（静止） ----
-  ctx.drawImage(parts.upper, 0, 0, dw, hipYWorld);
+  // ---- 上半身：从头顶(-h)画到髋部(-legH) ----
+  ctx.drawImage(parts.upper, 0, -h, parts.upperW * scale, upperH);
 
   ctx.restore();
 }
