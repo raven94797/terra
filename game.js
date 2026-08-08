@@ -1,7 +1,8 @@
 'use strict';
 /* =========================================================
- * 泰拉瑞亚 · Web Edition  —— 地表世界
- * 世界生成 / 物理 / 挖掘放置 / 昼夜循环 / 视差背景
+ * 松林卫士 · Pine Grove Guardian  —— 线虫灾害主题
+ * 剧情：松林被松树线虫病侵染。向导指引主角找到益生菌与无人机，
+ *       利用无人机释放益生菌，净化线虫并击败传播线虫的天牛Boss。
  * ========================================================= */
 
 // ---------------- 工具 ----------------
@@ -55,12 +56,12 @@ const DAY_LENGTH = 240;
 
 const T = { AIR: 0, GRASS: 1, DIRT: 2, STONE: 3, WOOD: 4, LEAVES: 5, SAND: 6 };
 const TILE_DEF = {
-  [T.GRASS]:  { key: 'grass',  name: '草方块', hard: 0.45, img: 'assets/tiles/grass.png',  cropTop: 0.10 },
+  [T.GRASS]:  { key: 'grass',  name: '草皮',   hard: 0.45, img: 'assets/tiles/grass.png',  cropTop: 0.10 },
   [T.DIRT]:   { key: 'dirt',   name: '泥土',   hard: 0.40, img: 'assets/tiles/dirt.png' },
-  [T.STONE]:  { key: 'stone',  name: '石头',   hard: 1.05, img: 'assets/tiles/stone.png' },
-  [T.WOOD]:   { key: 'wood',   name: '木材',   hard: 0.70, img: 'assets/tiles/wood.png' },
-  [T.LEAVES]: { key: 'leaves', name: '树叶',   hard: 0.18, img: 'assets/tiles/leaves.png' },
-  [T.SAND]:   { key: 'sand',   name: '沙子',   hard: 0.40, img: 'assets/tiles/sand.png' },
+  [T.STONE]:  { key: 'stone',  name: '岩石',   hard: 1.05, img: 'assets/tiles/stone.png' },
+  [T.WOOD]:   { key: 'wood',   name: '松木',   hard: 0.70, img: 'assets/tiles/wood.png' },
+  [T.LEAVES]: { key: 'leaves', name: '松针',   hard: 0.18, img: 'assets/tiles/leaves.png' },
+  [T.SAND]:   { key: 'sand',   name: '沙地',   hard: 0.40, img: 'assets/tiles/sand.png' },
 };
 const HOTBAR_ORDER = [T.GRASS, T.DIRT, T.STONE, T.WOOD, T.LEAVES, T.SAND];
 
@@ -97,17 +98,25 @@ let ready = false;
 let hp = 100, maxHp = 100;
 let invuln = 0;
 let dead = false, deadTimer = 0;
-let gel = 0;
 let shake = 0;
-let swordCd = 0, swordAnim = 0;
-const swordDir = { x: 1, y: 0 };
-const SWORD_RANGE = TILE * 3.2;
-const SWORD_ARC = 1.25;
-const SWORD_DMG = 18;
-const slimes = [];
-let slimeSpawnTimer = 1.5;
-const MAX_SLIMES = 8;
 let spawnX = 0, spawnY = 0;
+
+// ---------------- 无人机 / 益生菌 ----------------
+const drone = { x: 0, y: 0, vx: 0, vy: 0, rot: 0, rotor: 0, cd: 0 };
+let proBiotic = 0;          // 益生菌能量
+const MAX_PROBIOTIC = 6;
+const probioticShots = [];   // 益生菌弹
+const probioticPickups = []; // 可拾取的益生菌菌落
+const WORMS = [];            // 线虫
+let longicorn = null;        // 天牛Boss
+let bossActive = false;
+let bossAlertShown = 0;
+let victory = false, victoryTimer = 0;
+let spawnTimer = 1.5;
+const MAX_WORMS = 8;
+let missionStarted = false;  // 向导交付无人机后开始战斗
+let purified = 0;            // 净化的线虫数量
+const BOSS_TRIGGER = 6;      // 净化达到该数量后，天牛出现
 
 // ---------------- 资源加载 ----------------
 function loadImage(src) {
@@ -196,7 +205,7 @@ function removeWhiteBG(img, threshold = 232) {
   return out;
 }
 
-// ---------------- 世界生成 ----------------
+// ---------------- 世界生成（松林） ----------------
 function idx(tx, ty) { return ty * WORLD_W + tx; }
 function getTile(tx, ty) {
   if (tx < 0 || tx >= WORLD_W) return T.STONE;
@@ -248,7 +257,7 @@ function genWorld() {
     if (getTile(x, surfaceH[x]) !== T.GRASS) continue;
     if (Math.abs(surfaceH[x - 1] - surfaceH[x]) > 1 || Math.abs(surfaceH[x + 1] - surfaceH[x]) > 1) continue;
     if (noiseB.noise1(x * 0.21 + 9) < 0.56) continue;
-    growTree(x, surfaceH[x] - 1);
+    growPine(x, surfaceH[x] - 1);
     lastTree = x;
   }
 
@@ -260,26 +269,47 @@ function genWorld() {
       setTile(x, target, T.GRASS);
     }
   }
+
+  // 散布益生菌菌落（可拾取）
+  for (let i = 0; i < 10; i++) {
+    const tx = 20 + ((noiseB.noise1(i * 37.7 + 5) * (WORLD_W - 40)) | 0);
+    let gy = surfaceH[tx];
+    while (gy < WORLD_H && !isSolidType(getTile(tx, gy))) gy++;
+    if (gy >= WORLD_H) continue;
+    probioticPickups.push({
+      x: tx * TILE + TILE / 2,
+      y: (gy - 1) * TILE - 6,
+      taken: false,
+      respawn: 8 + i * 0.5,
+      phase: i * 1.3,
+    });
+  }
 }
 
-function growTree(tx, groundY) {
+// 针叶松树
+function growPine(tx, groundY) {
   const rand = mulberry32(tx * 31 + 7);
-  const h = 5 + ((rand() * 4) | 0);
+  const h = 9 + ((rand() * 5) | 0);       // 更高
   for (let i = 0; i < h; i++) setTile(tx, groundY - i, T.WOOD);
   const topY = groundY - h;
-  const r = 2 + ((rand() * 2) | 0);
-  for (let dy = -r; dy <= r; dy++) {
+  // 针叶层：多层三角形簇
+  let layerR = 2;
+  for (let dy = 0; dy >= -4; dy--) {
+    const y = topY + dy;
+    const r = layerR;
     for (let dx = -r; dx <= r; dx++) {
-      const dist = Math.sqrt(dx * dx + dy * dy * 1.4);
-      if (dist <= r + 0.4) {
-        const x = tx + dx, y = topY + dy;
-        const cur = getTile(x, y);
-        if ((cur === T.AIR || cur === T.WOOD) && !(dx === 0 && dy > 0)) setTile(x, y, T.LEAVES);
+      const x = tx + dx;
+      const cur = getTile(x, y);
+      if ((cur === T.AIR || cur === T.WOOD) && Math.abs(dx) + Math.abs(dy + 2) <= r + 1) {
+        setTile(x, y, T.LEAVES);
       }
     }
+    layerR = Math.min(3, layerR + (dy % 2 === 0 ? 1 : 0));
   }
-  setTile(tx, topY, T.WOOD);
-  if (rand() < 0.5) setTile(tx, topY + 1, T.WOOD);
+  // 树顶尖
+  setTile(tx, topY - 1, T.LEAVES);
+  setTile(tx + (rand() < 0.5 ? 1 : -1), topY, T.LEAVES);
+  setTile(tx, topY, T.LEAVES);
 }
 
 // ---------------- 音效 ----------------
@@ -289,83 +319,29 @@ function audio() {
   if (AC.state === 'suspended') AC.resume();
   return AC;
 }
-function sfxDig() {
+function tone(freq0, freq1, dur, type, vol) {
   try {
     const ac = audio();
-    const buf = ac.createBuffer(1, ac.sampleRate * 0.06, ac.sampleRate);
-    const ch = buf.getChannelData(0);
-    for (let i = 0; i < ch.length; i++) ch[i] = (Math.random() * 2 - 1) * (1 - i / ch.length);
-    const src = ac.createBufferSource(); src.buffer = buf;
-    const f = ac.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = 900;
-    const g = ac.createGain(); g.gain.value = 0.18;
-    src.connect(f); f.connect(g); g.connect(ac.destination); src.start();
-  } catch (e) { }
-}
-function sfxPlace() {
-  try {
-    const ac = audio();
-    const o = ac.createOscillator(); o.type = 'sine';
-    o.frequency.setValueAtTime(160, ac.currentTime);
-    o.frequency.exponentialRampToValueAtTime(70, ac.currentTime + 0.09);
+    const o = ac.createOscillator(); o.type = type || 'sine';
+    o.frequency.setValueAtTime(freq0, ac.currentTime);
+    if (freq1) o.frequency.exponentialRampToValueAtTime(freq1, ac.currentTime + dur);
     const g = ac.createGain();
-    g.gain.setValueAtTime(0.25, ac.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.1);
+    g.gain.setValueAtTime(vol || 0.15, ac.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + dur);
     o.connect(g); g.connect(ac.destination);
-    o.start(); o.stop(ac.currentTime + 0.11);
+    o.start(); o.stop(ac.currentTime + dur + 0.02);
   } catch (e) { }
 }
-function sfxJump() {
-  try {
-    const ac = audio();
-    const o = ac.createOscillator(); o.type = 'square';
-    o.frequency.setValueAtTime(220, ac.currentTime);
-    o.frequency.exponentialRampToValueAtTime(440, ac.currentTime + 0.1);
-    const g = ac.createGain();
-    g.gain.setValueAtTime(0.06, ac.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.12);
-    o.connect(g); g.connect(ac.destination);
-    o.start(); o.stop(ac.currentTime + 0.13);
-  } catch (e) { }
-}
-function sfxHurt() {
-  try {
-    const ac = audio();
-    const o = ac.createOscillator(); o.type = 'sawtooth';
-    o.frequency.setValueAtTime(320, ac.currentTime);
-    o.frequency.exponentialRampToValueAtTime(80, ac.currentTime + 0.18);
-    const g = ac.createGain();
-    g.gain.setValueAtTime(0.22, ac.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.2);
-    o.connect(g); g.connect(ac.destination);
-    o.start(); o.stop(ac.currentTime + 0.21);
-  } catch (e) { }
-}
-function sfxSlimeHit() {
-  try {
-    const ac = audio();
-    const o = ac.createOscillator(); o.type = 'triangle';
-    o.frequency.setValueAtTime(520, ac.currentTime);
-    o.frequency.exponentialRampToValueAtTime(160, ac.currentTime + 0.08);
-    const g = ac.createGain();
-    g.gain.setValueAtTime(0.16, ac.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.09);
-    o.connect(g); g.connect(ac.destination);
-    o.start(); o.stop(ac.currentTime + 0.1);
-  } catch (e) { }
-}
-function sfxSlimeDie() {
-  try {
-    const ac = audio();
-    const o = ac.createOscillator(); o.type = 'square';
-    o.frequency.setValueAtTime(240, ac.currentTime);
-    o.frequency.exponentialRampToValueAtTime(70, ac.currentTime + 0.12);
-    const g = ac.createGain();
-    g.gain.setValueAtTime(0.12, ac.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.13);
-    o.connect(g); g.connect(ac.destination);
-    o.start(); o.stop(ac.currentTime + 0.14);
-  } catch (e) { }
-}
+function sfxDig() { tone(0, 0, 0.06, 'sine', 0); }
+function sfxPlace() { tone(160, 70, 0.1, 'sine', 0.2); }
+function sfxJump() { tone(220, 440, 0.1, 'square', 0.05); }
+function sfxHurt() { tone(320, 80, 0.2, 'sawtooth', 0.18); }
+function sfxDrone() { tone(700, 900, 0.05, 'triangle', 0.06); }
+function sfxProbiotic() { tone(500, 1200, 0.08, 'triangle', 0.12); }
+function sfxPurify() { tone(900, 300, 0.14, 'square', 0.12); }
+function sfxBoss() { tone(150, 400, 0.6, 'sawtooth', 0.18); }
+function sfxPickup() { tone(800, 1600, 0.12, 'sine', 0.12); }
+function sfxVictory() { tone(600, 1200, 0.6, 'triangle', 0.15); }
 
 // ---------------- 物理 ----------------
 const GRAV = 0.55, MAX_FALL = 14;
@@ -432,6 +408,33 @@ class Entity {
   get cy() { return this.y + this.h / 2; }
 }
 
+// ---------------- 输入 ----------------
+const keys = {};
+const mouse = { x: 0, y: 0, left: false, right: false };
+
+window.addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  keys[k] = true;
+  if (k === ' ') e.preventDefault();
+  if (k === 'h') {
+    helpVisible = !helpVisible;
+    const el = document.getElementById('help');
+    if (el) el.style.display = helpVisible ? 'block' : 'none';
+  }
+  const n = parseInt(k, 10);
+  if (n >= 1 && n <= HOTBAR_ORDER.length) selSlot = n - 1;
+});
+window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+window.addEventListener('mousedown', e => {
+  if (e.button === 0) mouse.left = true;
+  if (e.button === 2) mouse.right = true;
+});
+window.addEventListener('mouseup', e => {
+  if (e.button === 0) mouse.left = false;
+  if (e.button === 2) mouse.right = false;
+});
+window.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+
 // ---------------- 玩家 ----------------
 const player = new Entity(0, 0, 26, 92);
 const P_SPEED = 4.4, P_JUMP = -13.6;
@@ -479,6 +482,12 @@ function updateGuide(dt) {
   if (Math.abs(distP) < TILE * 3.5) {
     guide.face = distP > 0 ? 1 : -1;
     guide.vx = lerp(guide.vx, 0, 0.3);
+    // 交付无人机
+    if (!missionStarted && distP >= -TILE * 2) {
+      missionStarted = true;
+      sfxPickup();
+      drone.given = true;
+    }
   } else {
     if (ai.timer <= 0) {
       if (ai.state === 'idle') {
@@ -508,21 +517,18 @@ function updateGuide(dt) {
   else guide.walkPhase *= 0.8;
 }
 
-// ---------------- 史莱姆敌人 ----------------
-class Slime extends Entity {
-  constructor(cx, bottomY, big) {
-    const w = big ? 44 : 28;
-    const h = big ? 30 : 20;
-    super(cx - w / 2, bottomY - h, w, h);
-    this.big = big;
-    this.maxHp = big ? 40 : 15;
+// ---------------- 线虫敌人 ----------------
+class Worm extends Entity {
+  constructor(cx, bottomY) {
+    super(cx - 22, bottomY - 12, 44, 12);
+    this.maxHp = 12;
     this.hp = this.maxHp;
-    this.jump = big ? 9.5 : 8;
-    this.speed = big ? 1.7 : 2.1;
-    this.timer = 0.5 + Math.random() * 1.2;
+    this.speed = 1.3;
     this.dir = Math.random() < 0.5 ? -1 : 1;
     this.flash = 0;
     this.phase = Math.random() * 6.28;
+    this.timer = 0.5 + Math.random();
+    this.buried = false;
   }
 }
 
@@ -530,254 +536,280 @@ function overlap(a, b) {
   return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 }
 
-function spawnSlime(cx, bottomY, big) {
-  const s = new Slime(cx, bottomY, big);
-  slimes.push(s);
+function spawnWorm(cx, bottomY) {
+  const w = new Worm(cx, bottomY);
+  WORMS.push(w);
 }
 
-function trySpawnSlime() {
+function trySpawnWorm() {
   for (let attempt = 0; attempt < 6; attempt++) {
     const dir = Math.random() < 0.5 ? -1 : 1;
-    const distTiles = 18 + Math.random() * 26;
+    const distTiles = 16 + Math.random() * 24;
     const tx = clamp(Math.round(player.cx / TILE + dir * distTiles), 6, WORLD_W - 6);
     let gy = surfaceH[tx];
     while (gy < WORLD_H && !isSolidType(getTile(tx, gy))) gy++;
     if (gy >= WORLD_H) continue;
-    if (Math.abs(tx * TILE - player.cx) < TILE * 10) continue;
-    const w = 44, h = 30, x = tx * TILE + TILE / 2, y = gy * TILE;
+    if (Math.abs(tx * TILE - player.cx) < TILE * 8) continue;
+    const w = 44, h = 12, x = tx * TILE + TILE / 2, y = gy * TILE;
     if (rectHitsSolid(x - w / 2, y - h, w, h)) continue;
-    spawnSlime(x, y, Math.random() < 0.3);
+    spawnWorm(x, y);
     return;
   }
 }
 
-function updateSlimes(dt) {
-  slimeSpawnTimer -= dt;
-  if (slimeSpawnTimer <= 0 && slimes.length < MAX_SLIMES && !dead) {
-    trySpawnSlime();
-    slimeSpawnTimer = 3.5 + Math.random() * 5;
+function updateWorms(dt) {
+  if (missionStarted) {
+    spawnTimer -= dt;
+    if (spawnTimer <= 0 && WORMS.length < MAX_WORMS && !dead && !victory) {
+      trySpawnWorm();
+      spawnTimer = 3.5 + Math.random() * 4;
+    }
   }
-  for (let i = slimes.length - 1; i >= 0; i--) {
-    const s = slimes[i];
-    s.flash = Math.max(0, s.flash - dt);
-    s.phase += dt * 7;
-    s.timer -= dt;
-    const dx = player.cx - s.cx;
-    if (s.onGround && s.timer <= 0 && Math.abs(dx) < TILE * 50) {
-      s.dir = dx > 0 ? 1 : -1;
-      s.vy = -s.jump;
-      s.vx = s.dir * s.speed;
-      s.timer = 0.9 + Math.random() * 1.5;
-    } else if (!s.onGround) {
-      s.vx = lerp(s.vx, 0, 0.015);
+  for (let i = WORMS.length - 1; i >= 0; i--) {
+    const w = WORMS[i];
+    w.flash = Math.max(0, w.flash - dt);
+    w.phase += dt * 8;
+    w.timer -= dt;
+    const dx = player.cx - w.cx;
+    // 朝玩家缓慢蠕动
+    if (Math.abs(dx) > 4) w.dir = dx > 0 ? 1 : -1;
+    w.vx = lerp(w.vx, w.dir * w.speed, 0.08);
+    w.physics();
+    // 蠕动弹跳
+    if (w.onGround && w.timer <= 0) {
+      w.vy = -4.5;
+      w.timer = 1 + Math.random() * 1.5;
     }
-    s.physics();
-    if (Math.abs(s.vx) < 0.1 && !s.onGround) {
-      s.dir *= -1;
-      s.vx = s.dir * s.speed;
+    if (overlap(w, player) && invuln <= 0 && !dead) {
+      hurtPlayer(14, dx > 0 ? 5 : -5);
     }
-    if (overlap(s, player) && invuln <= 0 && !dead) {
-      hurtPlayer(12, dx > 0 ? 5 : -5);
-    }
-    if (s.y > WORLD_H * TILE + 100) slimes.splice(i, 1);
+    if (w.y > WORLD_H * TILE + 100) WORMS.splice(i, 1);
   }
 }
 
-function slimeHit(s, dmg, dx, dy) {
-  s.hp -= dmg;
-  s.flash = 0.14;
-  s.vx = dx * 4.5;
-  s.vy = -6;
-  s.timer = 0.35;
-  if (s.hp <= 0) slimeDie(s);
-}
-
-function slimeDie(s) {
-  const i = slimes.indexOf(s);
-  if (i >= 0) slimes.splice(i, 1);
-  spawnSlimeParticles(s);
-  gel += s.big ? 2 : 1;
-  sfxSlimeDie();
-  if (s.big) {
-    spawnSlime(s.cx, s.y + s.h, false);
-    spawnSlime(s.cx + 6, s.y + s.h, false);
+function wormHit(w, dmg) {
+  w.hp -= dmg;
+  w.flash = 0.14;
+  if (w.hp <= 0) {
+    const i = WORMS.indexOf(w);
+    if (i >= 0) WORMS.splice(i, 1);
+    spawnWormParticles(w);
+    sfxPurify();
+    purified++;
+    if (!bossActive && !victory && missionStarted && purified >= BOSS_TRIGGER) {
+      spawnBoss();
+    }
   }
 }
 
-function spawnSlimeParticles(s) {
-  const col = s.big ? '#6bd13d' : '#4ab32d';
-  for (let i = 0; i < 14; i++) {
+function spawnWormParticles(w) {
+  for (let i = 0; i < 10; i++) {
     particles.push({
-      x: s.cx + (Math.random() - 0.5) * s.w,
-      y: s.cy + (Math.random() - 0.5) * s.h,
-      vx: (Math.random() - 0.5) * 7,
-      vy: -Math.random() * 6 - 1,
-      life: 0.45 + Math.random() * 0.4,
+      x: w.cx + (Math.random() - 0.5) * w.w,
+      y: w.cy + (Math.random() - 0.5) * w.h,
+      vx: (Math.random() - 0.5) * 6,
+      vy: -Math.random() * 5 - 1,
+      life: 0.4 + Math.random() * 0.4,
       t: 0,
-      color: col,
-      size: 4 + Math.random() * 5,
+      color: Math.random() < 0.5 ? '#ffd5c8' : '#9ae66a',
+      size: 3 + Math.random() * 4,
       spin: 0, rot: 0, rect: true,
     });
   }
 }
 
-// ---------------- 输入 ----------------
-const keys = {};
-const mouse = { x: 0, y: 0, left: false, right: false };
-
-window.addEventListener('keydown', e => {
-  const k = e.key.toLowerCase();
-  keys[k] = true;
-  if (k === ' ') e.preventDefault();
-  if (k === 'h') {
-    helpVisible = !helpVisible;
-    document.getElementById('help').style.display = helpVisible ? 'block' : 'none';
+// ---------------- 天牛 Boss ----------------
+class Longicorn extends Entity {
+  constructor(cx, y) {
+    super(cx - 40, y - 32, 80, 32);
+    this.maxHp = 300;
+    this.hp = this.maxHp;
+    this.phase = 0;
+    this.attackTimer = 2.5;
+    this.speed = 2.2;
+    this.dir = Math.random() < 0.5 ? -1 : 1;
+    this.animT = 0;
+    this.enraged = false;
+    this.flash = 0;
   }
-  const n = parseInt(k, 10);
-  if (n >= 1 && n <= HOTBAR_ORDER.length) selSlot = n - 1;
-});
-window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
-canvas.addEventListener('contextmenu', e => e.preventDefault());
-canvas.addEventListener('mousedown', e => {
-  if (e.button === 0) mouse.left = true;
-  if (e.button === 2) mouse.right = true;
-});
-window.addEventListener('mouseup', e => {
-  if (e.button === 0) mouse.left = false;
-  if (e.button === 2) mouse.right = false;
-});
-window.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
-window.addEventListener('wheel', e => {
-  selSlot = (selSlot + (e.deltaY > 0 ? 1 : -1) + HOTBAR_ORDER.length) % HOTBAR_ORDER.length;
-}, { passive: true });
-
-// ---------------- 挖掘 / 放置 ----------------
-const REACH = 5.5 * TILE;
-const mining = { tx: -1, ty: -1, progress: 0 };
-let placeCooldown = 0;
-
-function mouseTile() {
-  const wx = mouse.x + cam.x, wy = mouse.y + cam.y;
-  return { tx: Math.floor(wx / TILE), ty: Math.floor(wy / TILE), wx, wy };
 }
 
-function inReach(tx, ty) {
-  const cx = (tx + 0.5) * TILE, cy = (ty + 0.5) * TILE;
-  const dx = cx - player.cx, dy = cy - (player.y + player.h * 0.45);
-  return dx * dx + dy * dy <= REACH * REACH;
+function spawnBoss() {
+  const dir = player.cx > WORLD_W * TILE / 2 ? -1 : 1;
+  const tx = clamp(Math.round(player.cx / TILE + dir * 24), 8, WORLD_W - 8);
+  longicorn = new Longicorn(tx * TILE, surfaceH[tx] * TILE - 60);
+  bossActive = true;
+  bossAlertShown = 2.2;
+  sfxBoss();
 }
 
-function spawnBreakParticles(tx, ty, type) {
-  const src = tex[type];
-  if (!src) return;
-  for (let i = 0; i < 9; i++) {
-    const sx = ((Math.random() * 3) | 0) * 16 + ((Math.random() < 0.5) ? 64 : 0);
-    const sy = ((Math.random() * 3) | 0) * 16 + ((Math.random() < 0.5) ? 64 : 0);
+function updateBoss(dt) {
+  if (!bossActive || !longicorn) return;
+  const b = longicorn;
+  b.flash = Math.max(0, b.flash - dt);
+  b.animT += dt;
+  b.phase += dt * 4;
+  b.attackTimer -= dt;
+
+  const dx = player.cx - b.cx;
+
+  // 朝玩家移动（天牛缓慢飞行，贴近玩家）
+  b.dir = dx > 0 ? 1 : -1;
+  b.vx = lerp(b.vx, b.dir * b.speed, 0.05);
+  b.vy = lerp(b.vy, (player.cy - b.cy) * 0.02, 0.05);
+  b.physics();
+
+  // 释放小线虫
+  if (b.attackTimer <= 0) {
+    for (let i = 0; i < 2 + (b.enraged ? 1 : 0); i++) {
+      spawnWorm(b.cx + (i - 0.5) * 20, b.cy + b.h / 2);
+    }
+    sfxBoss();
+    b.attackTimer = 3 + (b.enraged ? 1.5 : 3.5);
+  }
+
+  // 触碰伤害
+  if (overlap(b, player) && invuln <= 0 && !dead) {
+    hurtPlayer(18, dx > 0 ? 7 : -7);
+  }
+
+  // 半血狂暴
+  if (!b.enraged && b.hp <= b.maxHp / 2) {
+    b.enraged = true;
+    b.speed = 3.1;
+    sfxBoss();
+  }
+
+  if (b.hp <= 0) {
+    bossDefeated();
+  }
+}
+
+function bossHit(dmg) {
+  if (!longicorn) return;
+  longicorn.hp -= dmg;
+  longicorn.flash = 0.1;
+  longicorn.hp = Math.max(0, longicorn.hp);
+  if (longicorn.hp <= 0) bossDefeated();
+}
+
+function bossDefeated() {
+  if (!bossActive) return;
+  for (let i = 0; i < 26; i++) {
     particles.push({
-      x: tx * TILE + TILE / 2 + (Math.random() - 0.5) * TILE * 0.6,
-      y: ty * TILE + TILE / 2 + (Math.random() - 0.5) * TILE * 0.6,
-      vx: (Math.random() - 0.5) * 5,
-      vy: -Math.random() * 5 - 1,
-      life: 0.55 + Math.random() * 0.4,
+      x: longicorn.cx + (Math.random() - 0.5) * longicorn.w,
+      y: longicorn.cy + (Math.random() - 0.5) * longicorn.h,
+      vx: (Math.random() - 0.5) * 9,
+      vy: -Math.random() * 7 - 1,
+      life: 0.6 + Math.random() * 0.6,
       t: 0,
-      src, sx, sy, size: 9 + Math.random() * 5,
-      spin: (Math.random() - 0.5) * 0.3,
-      rot: Math.random() * 6.28,
+      color: Math.random() < 0.5 ? '#ff8a4c' : '#9ae66a',
+      size: 4 + Math.random() * 6,
+      spin: 0, rot: 0, rect: true,
     });
   }
+  longicorn = null;
+  bossActive = false;
+  victory = true;
+  victoryTimer = 3.5;
+  sfxVictory();
 }
 
-function updateMining(dt) {
-  placeCooldown -= dt;
-  const { tx, ty } = mouseTile();
-  const target = getTile(tx, ty);
-  const canReach = inReach(tx, ty);
+// ---------------- 无人机 / 益生菌 ----------------
+function updateDrone(dt) {
+  drone.rotor += dt * 40;
+  drone.cd -= dt;
+  drone.given = missionStarted && !victory;
 
-  if (mouse.left && canReach && target !== T.AIR) {
-    if (mining.tx !== tx || mining.ty !== ty) {
-      mining.tx = tx; mining.ty = ty; mining.progress = 0;
-    }
-    const def = TILE_DEF[target];
-    mining.progress += dt / def.hard;
-    if (Math.random() < dt * 14) sfxDig();
-    if (Math.random() < dt * 30) {
-      // 挖掘碎屑
-      const src = tex[target];
-      if (src) particles.push({
-        x: (tx + 0.5) * TILE + (Math.random() - 0.5) * TILE * 0.7,
-        y: (ty + 0.5) * TILE + (Math.random() - 0.5) * TILE * 0.7,
-        vx: (Math.random() - 0.5) * 3, vy: -Math.random() * 3,
-        life: 0.4, t: 0, src, sx: 32, sy: 32, size: 6 + Math.random() * 4,
-        spin: (Math.random() - 0.5) * 0.4, rot: Math.random() * 6.28,
-      });
-    }
-    if (mining.progress >= 1) {
-      setTile(tx, ty, T.AIR);
-      inv[target] = (inv[target] || 0) + 1;
-      spawnBreakParticles(tx, ty, target);
-      sfxDig();
-      mining.progress = 0;
-      mining.tx = -1;
-    }
-  } else {
-    mining.progress = 0;
-    mining.tx = -1;
+  if (!drone.given) {
+    // 尚未获得无人机：待命在向导旁
+    drone.x = guide.cx;
+    drone.y = guide.y - 60;
+    drone.rot = Math.sin(performance.now() * 0.002) * 0.1;
+    return;
   }
 
-  // 放置
-  if (mouse.right && canReach && target === T.AIR && placeCooldown <= 0) {
-    const type = HOTBAR_ORDER[selSlot];
-    if (inv[type] > 0) {
-      // 需要邻接实心块
-      let adjacent = false;
-      for (let dy = -1; dy <= 1 && !adjacent; dy++)
-        for (let dx = -1; dx <= 1 && !adjacent; dx++)
-          if (dx || dy) if (isSolidType(getTile(tx + dx, ty + dy))) adjacent = true;
-      if (adjacent) {
-        const px = tx * TILE, py = ty * TILE;
-        const overlapsPlayer = px < player.x + player.w && px + TILE > player.x && py < player.y + player.h && py + TILE > player.y;
-        const overlapsGuide = px < guide.x + guide.w && px + TILE > guide.x && py < guide.y + guide.h && py + TILE > guide.y;
-        if (!overlapsPlayer && !overlapsGuide) {
-          setTile(tx, ty, type);
-          inv[type]--;
-          sfxPlace();
-          placeCooldown = 0.16;
-        }
-      }
-    }
-  }
-}
+  // 跟随玩家，悬浮在玩家头顶
+  const tx = player.cx;
+  const ty = player.y + player.h * 0.18 - 60;
+  drone.vx = lerp(drone.vx, (tx - drone.x) * 0.1, 0.1);
+  drone.vy = lerp(drone.vy, (ty - drone.y) * 0.08, 0.1);
+  drone.x += drone.vx * dt;
+  drone.y += drone.vy * dt;
+  drone.rot = clamp((tx - drone.x) * 0.01, -0.25, 0.25);
 
-// ---------------- 剑击 / 玩家生命 ----------------
-function updateSword(dt) {
-  swordCd -= dt;
-  swordAnim = Math.max(0, swordAnim - dt * 5);
-  shake = Math.max(0, shake - dt * 1.6);
-  if (mouse.left && swordCd <= 0 && !dead) {
+  // 发射益生菌（鼠标左键）
+  if ((mouse.left || keys['j'] || keys['q']) && drone.cd <= 0 && proBiotic > 0 && !dead) {
     const wx = mouse.x + cam.x, wy = mouse.y + cam.y;
-    const px = player.cx, py = player.y + player.h * 0.45;
-    const dx = wx - px, dy = wy - py;
-    const len = Math.hypot(dx, dy);
-    swordDir.x = len > 0.01 ? dx / len : 1;
-    swordDir.y = len > 0.01 ? dy / len : 0;
-    let hitAny = false;
-    const cosA = Math.cos(SWORD_ARC / 2);
-    for (const s of slimes) {
-      const sx = s.cx - px, sy = s.cy - py;
-      const d = Math.hypot(sx, sy);
-      if (d > SWORD_RANGE) continue;
-      const dot = d > 0.01 ? (sx * swordDir.x + sy * swordDir.y) / d : 1;
-      if (dot >= cosA) {
-        slimeHit(s, SWORD_DMG, swordDir.x, swordDir.y);
-        hitAny = true;
+    const dx = wx - drone.x, dy = wy - drone.y;
+    const len = Math.hypot(dx, dy) || 1;
+    probioticShots.push({
+      x: drone.x, y: drone.y,
+      vx: (dx / len) * 10, vy: (dy / len) * 10,
+      life: 1.4,
+    });
+    proBiotic--;
+    drone.cd = 0.28;
+    sfxDrone();
+    sfxProbiotic();
+  }
+
+  // 益生菌弹
+  for (let i = probioticShots.length - 1; i >= 0; i--) {
+    const s = probioticShots[i];
+    s.x += s.vx; s.y += s.vy;
+    s.life -= dt;
+    let used = false;
+    if (s.life <= 0) used = true;
+    // 命中线虫
+    for (let wi = WORMS.length - 1; wi >= 0; wi--) {
+      const w = WORMS[wi];
+      if (s.x > w.x - 4 && s.x < w.x + w.w + 4 && s.y > w.y - 4 && s.y < w.y + w.h + 4) {
+        wormHit(w, 100);
+        used = true;
+        break;
       }
     }
-    if (hitAny) sfxSlimeHit();
-    swordCd = 0.45;
-    swordAnim = 1;
+    // 命中天牛
+    if (!used && bossActive && longicorn && s.x > longicorn.x - 6 && s.x < longicorn.x + longicorn.w + 6 && s.y > longicorn.y - 6 && s.y < longicorn.y + longicorn.h + 6) {
+      bossHit(25);
+      used = true;
+    }
+    if (used) {
+      // 净化粒子
+      for (let j = 0; j < 6; j++) {
+        particles.push({
+          x: s.x, y: s.y,
+          vx: (Math.random() - 0.5) * 4,
+          vy: (Math.random() - 0.5) * 4,
+          life: 0.3 + Math.random() * 0.3,
+          t: 0,
+          color: '#b7ff5e',
+          size: 3 + Math.random() * 3,
+          spin: 0, rot: 0, rect: true,
+        });
+      }
+      probioticShots.splice(i, 1);
+    }
+  }
+
+  // 益生菌菌落拾取
+  for (const p of probioticPickups) {
+    if (p.taken) { p.respawn -= dt; if (p.respawn <= 0) { p.taken = false; p.respawn = 8; } continue; }
+    if (!missionStarted) continue;
+    const dx = p.x - player.cx, dy = p.y - (player.y + player.h * 0.4);
+    if (dx * dx + dy * dy < TILE * TILE * 1.2) {
+      if (proBiotic < MAX_PROBIOTIC) {
+        proBiotic++;
+        p.taken = true;
+        p.respawn = 10 + Math.random() * 8;
+        sfxPickup();
+      }
+    }
   }
 }
 
+// ---------------- 玩家受击 / 死亡 ----------------
 function hurtPlayer(dmg, kb) {
   hp -= dmg;
   invuln = 1.0;
@@ -803,9 +835,26 @@ function updateDeath(dt) {
     player.vx = 0; player.vy = 0;
     cam.x = player.cx - VW / 2;
     cam.y = player.cy - VH / 2;
-    for (let i = slimes.length - 1; i >= 0; i--) {
-      if (Math.abs(slimes[i].cx - player.cx) < TILE * 6) slimes.splice(i, 1);
+    for (let i = WORMS.length - 1; i >= 0; i--) {
+      if (Math.abs(WORMS[i].cx - player.cx) < TILE * 6) WORMS.splice(i, 1);
     }
+  }
+}
+
+function updateVictory(dt) {
+  if (!victory) return;
+  victoryTimer -= dt;
+  // 净化：所有线虫消散
+  for (let i = WORMS.length - 1; i >= 0; i--) {
+    wormHit(WORMS[i], 100);
+  }
+  if (victoryTimer <= 0) {
+    victory = false;
+    // 重置Boss以便再次挑战
+    bossActive = false;
+    longicorn = null;
+    purified = 0;
+    WORMS.length = 0;
   }
 }
 
@@ -818,7 +867,6 @@ function updateParticles(dt) {
     p.x += p.vx;
     p.y += p.vy;
     p.rot += p.spin;
-    // 简单地面反弹
     const tx = Math.floor(p.x / TILE), ty = Math.floor((p.y + p.size / 2) / TILE);
     if (isSolidType(getTile(tx, ty)) && p.vy > 0) {
       p.vy *= -0.45;
@@ -850,7 +898,7 @@ function mixColor(c1, c2, t) {
   return [lerp(c1[0], c2[0], t) | 0, lerp(c1[1], c2[1], t) | 0, lerp(c1[2], c2[2], t) | 0];
 }
 const SKY = {
-  dayTop: [58, 132, 229], dayBot: [168, 216, 255],
+  dayTop: [70, 138, 96], dayBot: [190, 224, 180],   // 松林绿调
   duskTop: [56, 52, 118], duskBot: [255, 148, 74],
   nightTop: [7, 9, 32], nightBot: [24, 29, 66],
 };
@@ -882,7 +930,6 @@ function drawStars(s) {
 function drawSunMoon(s) {
   const horizonY = (SURFACE_Y - 6) * TILE - cam.y;
   const ang = timeOfDay * Math.PI * 2;
-  // 太阳
   const sunX = VW * (0.5 + 0.42 * Math.cos(ang - Math.PI / 2));
   const sunY = horizonY - Math.sin(ang) * VH * 0.42;
   if (s.h > -0.08) {
@@ -899,7 +946,6 @@ function drawSunMoon(s) {
     ctx.beginPath(); ctx.arc(sunX - 4, sunY - 5, 17, 0, 6.29); ctx.fill();
     ctx.restore();
   }
-  // 月亮
   const mang = ang + Math.PI;
   const moonX = VW * (0.5 + 0.42 * Math.cos(mang - Math.PI / 2));
   const moonY = horizonY - Math.sin(mang) * VH * 0.42;
@@ -944,7 +990,6 @@ function drawClouds(dt) {
   const wrapW = VW + 700;
   for (const c of clouds) {
     c.x += c.sp * dt;
-    // 屏幕锚定 + 视差：x 在屏幕上循环，y 固定于天空区域
     let sx = (c.x - cam.x * 0.4) % wrapW;
     if (sx < -350) sx += wrapW;
     const sy = c.y - cam.y * 0.12;
@@ -970,19 +1015,18 @@ function drawTiles() {
       if (v === T.AIR) continue;
       const t = tex[v];
       if (!t) continue;
-      // 变体选择（伪随机稳定）
       const h2 = (tx * 73856093) ^ (ty * 19349663);
       const sx = (h2 & 1) * 64, sy = ((h2 >> 1) & 1) * 64;
       ctx.drawImage(t, sx, sy, 64, 64, tx * TILE - cam.x, ty * TILE - cam.y, TILE + 0.5, TILE + 0.5);
-      // 矿石点缀：石头层偶尔闪现铜矿斑点
-      if (v === T.STONE && ty > SURFACE_Y + 8) {
-        const n = noise.noise2(tx * 0.35, ty * 0.35);
-        if (n > 0.82) {
+      // 受侵染的枯黄松针（带病斑的树）
+      if (v === T.LEAVES) {
+        const n = noise.noise2(tx * 0.2 + 31, ty * 0.2 + 17);
+        if (n > 0.55) {
           const px = tx * TILE - cam.x, py = ty * TILE - cam.y;
-          ctx.fillStyle = 'rgba(224,132,60,0.85)';
-          const r = mulberry32(tx * 91 + ty * 57);
-          for (let i = 0; i < 4; i++) {
-            ctx.fillRect(px + r() * (TILE - 8), py + r() * (TILE - 8), 6, 6);
+          ctx.fillStyle = 'rgba(190,120,40,0.8)';
+          const r = mulberry32(tx * 71 + ty * 23);
+          for (let i = 0; i < 3; i++) {
+            ctx.fillRect(px + r() * (TILE - 10), py + r() * (TILE - 10), 5, 5);
           }
         }
       }
@@ -1034,75 +1078,6 @@ function drawGuideName() {
   ctx.restore();
 }
 
-function drawSword() {
-  if (swordAnim <= 0.02) return;
-  const baseX = player.cx - cam.x, baseY = player.y + player.h * 0.4 - cam.y;
-  const ang = Math.atan2(swordDir.y, swordDir.x);
-  const wind = (1 - swordAnim) * 0.9;
-  const sgn = Math.cos(ang) >= 0 ? 1 : -1;
-  ctx.save();
-  ctx.translate(baseX, baseY);
-  ctx.rotate(ang + wind * sgn * 0.6);
-  ctx.globalAlpha = clamp(swordAnim * 1.3, 0, 1);
-  // 挥剑残影
-  ctx.strokeStyle = `rgba(255,255,255,${swordAnim * 0.5})`;
-  ctx.lineWidth = 12;
-  ctx.lineCap = 'round';
-  ctx.beginPath();
-  ctx.arc(0, 0, 34, -0.7, 0.7);
-  ctx.stroke();
-  // 剑刃
-  ctx.fillStyle = '#d7deea';
-  ctx.fillRect(14, -4, 52, 8);
-  ctx.fillStyle = '#aab6c8';
-  ctx.fillRect(14, 1, 52, 2);
-  // 剑尖
-  ctx.beginPath();
-  ctx.moveTo(66, -4); ctx.lineTo(80, 0); ctx.lineTo(66, 4);
-  ctx.closePath();
-  ctx.fillStyle = '#f2f6fc';
-  ctx.fill();
-  // 护手
-  ctx.fillStyle = '#7a5a2a';
-  ctx.fillRect(8, -9, 7, 17);
-  ctx.fillStyle = '#5d4520';
-  ctx.fillRect(8, 4, 7, 4);
-  ctx.restore();
-}
-
-function drawMiningCrack() {
-  if (mining.tx < 0 || mining.progress <= 0) return;
-  const px = mining.tx * TILE - cam.x, py = mining.ty * TILE - cam.y;
-  const stage = Math.min(3, (mining.progress * 4) | 0);
-  const r = mulberry32(mining.tx * 131 + mining.ty * 17);
-  ctx.save();
-  ctx.strokeStyle = `rgba(20,16,10,${0.35 + stage * 0.18})`;
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  for (let i = 0; i < 3 + stage * 3; i++) {
-    const x1 = px + r() * TILE, y1 = py + r() * TILE;
-    const x2 = x1 + (r() - 0.5) * TILE * 0.5, y2 = y1 + (r() - 0.5) * TILE * 0.5;
-    ctx.moveTo(x1, y1);
-    ctx.lineTo(x2, y2);
-  }
-  ctx.stroke();
-  ctx.restore();
-}
-
-function drawHoverHighlight() {
-  const { tx, ty } = mouseTile();
-  if (!inReach(tx, ty)) return;
-  if (getTile(tx, ty) === T.AIR && !mouse.right) {
-    // 空气格：仅右键预览
-  }
-  ctx.save();
-  ctx.strokeStyle = 'rgba(255,255,255,0.65)';
-  ctx.lineWidth = 2;
-  ctx.setLineDash([6, 4]);
-  ctx.strokeRect(tx * TILE - cam.x + 1, ty * TILE - cam.y + 1, TILE - 2, TILE - 2);
-  ctx.restore();
-}
-
 function drawParticles() {
   for (const p of particles) {
     const a = 1 - p.t / p.life;
@@ -1139,45 +1114,164 @@ function roundRectPath(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
-// ---------------- 史莱姆绘制 ----------------
-function drawSlimes() {
-  for (const s of slimes) {
-    const x = s.x - cam.x, y = s.y - cam.y;
-    const w = s.w, h = s.h;
-    const air = !s.onGround;
-    const sqY = air ? 1.1 : 1 - 0.08 * Math.abs(Math.sin(s.phase));
-    const sqX = air ? 0.9 : 1 + 0.05 * Math.abs(Math.sin(s.phase));
-    ctx.save();
-    ctx.translate(x + w / 2, y + h);
-    ctx.scale(sqX, sqY);
-    ctx.translate(-w / 2, -h);
-    const body = s.flash > 0 ? '#ffffff' : (s.big ? '#6bd13d' : '#4ab32d');
-    const shade = s.flash > 0 ? '#e8e8e8' : (s.big ? '#4a9a29' : '#368a20');
-    roundRectPath(ctx, 0, 0, w, h, 7);
-    ctx.fillStyle = body;
-    ctx.fill();
-    ctx.fillStyle = shade;
-    ctx.fillRect(2, h * 0.68, w - 4, h * 0.3);
-    // 眼睛跟随玩家
-    const look = clamp((player.cx - s.cx) / 60, -1, 1) * 2;
-    ctx.fillStyle = '#ffffff';
-    const ey = h * 0.36;
-    ctx.fillRect(w * 0.14, ey, w * 0.22, h * 0.22);
-    ctx.fillRect(w * 0.64, ey, w * 0.22, h * 0.22);
-    ctx.fillStyle = '#151515';
-    ctx.fillRect(w * 0.22 + look * 1.5, ey + h * 0.07, w * 0.09, h * 0.09);
-    ctx.fillRect(w * 0.72 + look * 1.5, ey + h * 0.07, w * 0.09, h * 0.09);
-    // 嘴
-    ctx.fillStyle = shade;
-    ctx.fillRect(w * 0.36, h * 0.6, w * 0.28, h * 0.12);
-    // 受伤血条
-    if (s.hp < s.maxHp) {
-      const bw = w * 0.8, bx = (w - bw) / 2, by = -9;
-      ctx.fillStyle = 'rgba(0,0,0,0.55)';
-      ctx.fillRect(bx, by, bw, 4);
-      ctx.fillStyle = '#ff4757';
-      ctx.fillRect(bx + 1, by + 1, (bw - 2) * Math.max(0, s.hp / s.maxHp), 2);
+// ---------------- 线虫绘制 ----------------
+function drawWorms() {
+  for (const w of WORMS) {
+    const x = w.x - cam.x, y = w.y - cam.y;
+    const segs = 6, segW = w.w / segs;
+    const baseY = y + w.h;
+    const body = w.flash > 0 ? '#ffffff' : '#f2c3b5';
+    const dark = w.flash > 0 ? '#e8e8e8' : '#d79a86';
+    // 蠕动波
+    for (let i = 0; i < segs; i++) {
+      const sx = x + i * segW;
+      const offset = Math.sin(w.phase + i * 0.8) * 3;
+      const sy = baseY - offset - 4;
+      ctx.fillStyle = body;
+      ctx.beginPath();
+      ctx.ellipse(sx + segW / 2, sy, segW * 0.62, 6, 0, 0, 6.29);
+      ctx.fill();
+      if (i === segs - 1) {
+        // 头部朝向
+        const hx = sx + segW * (w.dir > 0 ? 0.8 : -0.8);
+        ctx.fillStyle = dark;
+        ctx.beginPath();
+        ctx.ellipse(hx, sy - 1, segW * 0.7, 5, 0, 0, 6.29);
+        ctx.fill();
+        ctx.fillStyle = '#2a1a14';
+        ctx.fillRect(hx - 2, sy - 3, 2, 2);
+      }
     }
+  }
+}
+
+// ---------------- 天牛绘制 ----------------
+function drawLongicorn() {
+  if (!longicorn) return;
+  const b = longicorn;
+  const x = b.x - cam.x, y = b.y - cam.y;
+  const w = b.w, h = b.h;
+  const body = b.flash > 0 ? '#fff' : (b.enraged ? '#e05b2a' : '#b06a3a');
+  const dark = b.flash > 0 ? '#eee' : (b.enraged ? '#a33f18' : '#7a4522');
+  const wingA = Math.sin(b.animT * 20) * 0.9;
+  ctx.save();
+  ctx.translate(x + w / 2, y + h / 2);
+  ctx.rotate(b.dir > 0 ? 0 : Math.PI);
+  // 翅膀（张开）
+  ctx.save();
+  ctx.rotate(wingA);
+  ctx.fillStyle = body;
+  ctx.beginPath();
+  ctx.ellipse(-6, -14, 12, 16, 0, 0, 6.29);
+  ctx.fill();
+  ctx.restore();
+  ctx.save();
+  ctx.rotate(-wingA);
+  ctx.beginPath();
+  ctx.ellipse(-6, 14, 12, 16, 0, 0, 6.29);
+  ctx.fill();
+  ctx.restore();
+  // 身体
+  ctx.fillStyle = dark;
+  roundRectPath(ctx, -w / 2 + 8, -h / 2, w - 16, h, 8);
+  ctx.fill();
+  // 斑纹
+  ctx.fillStyle = '#3a2210';
+  for (let i = 0; i < 4; i++) {
+    ctx.beginPath();
+    ctx.arc(-8 - i * 8, 0, 3, 0, 6.29);
+    ctx.fill();
+  }
+  // 头部 + 触角
+  ctx.fillStyle = dark;
+  ctx.beginPath();
+  ctx.arc(w / 2 - 8, 0, 9, 0, 6.29);
+  ctx.fill();
+  ctx.strokeStyle = '#2a1a10';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(w / 2 - 4, -6);
+  ctx.lineTo(w / 2 + 12, -16 + Math.sin(b.animT * 8) * 2);
+  ctx.moveTo(w / 2 - 4, 6);
+  ctx.lineTo(w / 2 + 12, 16 + Math.cos(b.animT * 8) * 2);
+  ctx.stroke();
+  // 眼睛
+  ctx.fillStyle = '#ffd94d';
+  ctx.beginPath(); ctx.arc(w / 2 - 4, -4, 3, 0, 6.29); ctx.fill();
+  ctx.beginPath(); ctx.arc(w / 2 - 4, 4, 3, 0, 6.29); ctx.fill();
+  ctx.restore();
+}
+
+// ---------------- 无人机绘制 ----------------
+function drawDrone() {
+  const x = drone.x - cam.x, y = drone.y - cam.y;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(drone.rot);
+  // 旋翼
+  const rotorOffset = Math.sin(drone.rotor) * 4;
+  ctx.strokeStyle = 'rgba(200,220,255,0.5)';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(-20, -8 + rotorOffset);
+  ctx.lineTo(20, -8 + rotorOffset);
+  ctx.stroke();
+  // 机身
+  ctx.fillStyle = '#3a4a5a';
+  roundRectPath(ctx, -16, -5, 32, 14, 4);
+  ctx.fill();
+  ctx.fillStyle = '#5a738c';
+  roundRectPath(ctx, -16, -5, 32, 5, 4);
+  ctx.fill();
+  // 益生菌舱（发光）
+  const glow = 0.5 + 0.5 * Math.sin(performance.now() * 0.004);
+  ctx.fillStyle = `rgba(155,230,106,${0.5 + glow * 0.5})`;
+  ctx.beginPath();
+  ctx.arc(0, 4, 5 + glow * 1.5, 0, 6.29);
+  ctx.fill();
+  ctx.restore();
+}
+
+// ---------------- 益生菌弹绘制 ----------------
+function drawProbioticShots() {
+  for (const s of probioticShots) {
+    ctx.save();
+    ctx.fillStyle = 'rgba(183,255,94,0.4)';
+    ctx.beginPath();
+    ctx.arc(s.x - cam.x, s.y - cam.y, 10, 0, 6.29);
+    ctx.fill();
+    ctx.fillStyle = '#c8ff7a';
+    ctx.beginPath();
+    ctx.arc(s.x - cam.x, s.y - cam.y, 5, 0, 6.29);
+    ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(s.x - cam.x - 1, s.y - cam.y - 1, 2, 0, 6.29);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+// ---------------- 益生菌菌落绘制 ----------------
+function drawProbioticPickups() {
+  for (const p of probioticPickups) {
+    if (p.taken) continue;
+    if (!missionStarted) continue;
+    const pulse = 0.6 + 0.4 * Math.sin(performance.now() * 0.003 + p.phase);
+    const x = p.x - cam.x, y = p.y - cam.y;
+    ctx.save();
+    ctx.fillStyle = `rgba(155,230,106,${0.25 + pulse * 0.2})`;
+    ctx.beginPath();
+    ctx.arc(x, y, 14 + pulse * 3, 0, 6.29);
+    ctx.fill();
+    ctx.fillStyle = '#9ae66a';
+    ctx.beginPath();
+    ctx.arc(x, y, 7, 0, 6.29);
+    ctx.fill();
+    ctx.fillStyle = '#d7ffb0';
+    ctx.beginPath();
+    ctx.arc(x - 2, y - 2, 3, 0, 6.29);
+    ctx.fill();
     ctx.restore();
   }
 }
@@ -1226,13 +1320,47 @@ function drawHpUI() {
     const flicker = invuln > 0 && (Math.floor(performance.now() / 90) % 2 === 0);
     drawHeart(X + 8 + i * 30, Y + 14, 30, frac, flicker);
   }
+  // 益生菌能量条
   ctx.save();
   ctx.font = 'bold 15px "Microsoft YaHei", sans-serif';
   ctx.textAlign = 'left';
   ctx.shadowColor = 'rgba(0,0,0,0.75)';
   ctx.shadowBlur = 4;
-  ctx.fillStyle = '#c8ffc8';
-  ctx.fillText('凝胶 ×' + gel, X + 6, Y + 48);
+  ctx.fillStyle = '#d7ffb0';
+  ctx.fillText('益生菌', X + 6, Y + 46);
+  ctx.shadowBlur = 0;
+  const barW = 150, bx = X + 60, by = Y + 34;
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  roundRectPath(ctx, bx, by, barW, 14, 7);
+  ctx.fill();
+  const fill = clamp(proBiotic / MAX_PROBIOTIC, 0, 1);
+  if (fill > 0) {
+    ctx.fillStyle = '#9ae66a';
+    roundRectPath(ctx, bx + 2, by + 2, (barW - 4) * fill, 10, 5);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawBossBar() {
+  if (!bossActive || !longicorn) return;
+  const w = Math.min(VW * 0.55, 460);
+  const x = VW / 2 - w / 2, y = 16, h = 20;
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 14px "Microsoft YaHei", sans-serif';
+  ctx.fillStyle = '#fff';
+  ctx.shadowColor = 'rgba(0,0,0,0.8)';
+  ctx.shadowBlur = 4;
+  ctx.fillText('松墨天牛', VW / 2, y - 4);
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  roundRectPath(ctx, x, y + 2, w, h, 6);
+  ctx.fill();
+  const frac = clamp(longicorn.hp / longicorn.maxHp, 0, 1);
+  ctx.fillStyle = longicorn.enraged ? '#ff5b3a' : '#ff9a4c';
+  roundRectPath(ctx, x + 2, y + 4, (w - 4) * frac, h - 4, 5);
+  ctx.fill();
   ctx.restore();
 }
 
@@ -1253,10 +1381,55 @@ function drawDeathScreen() {
   ctx.shadowBlur = 8;
   ctx.font = 'bold 46px "Microsoft YaHei", sans-serif';
   ctx.fillStyle = '#ff5b5b';
-  ctx.fillText('你 死 了', VW / 2, VH / 2 - 10);
+  ctx.fillText('你 倒 下 了', VW / 2, VH / 2 - 10);
   ctx.font = '16px "Microsoft YaHei", sans-serif';
   ctx.fillStyle = '#ffd0d0';
-  ctx.fillText('正在重生…', VW / 2, VH / 2 + 26);
+  ctx.fillText('线虫仍在蔓延…重生后继续战斗', VW / 2, VH / 2 + 26);
+  ctx.restore();
+}
+
+function drawVictoryScreen() {
+  if (!victory) return;
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.shadowColor = 'rgba(0,0,0,0.8)';
+  ctx.shadowBlur = 8;
+  ctx.font = 'bold 40px "Microsoft YaHei", sans-serif';
+  ctx.fillStyle = '#9ae66a';
+  ctx.fillText('松林得救了！', VW / 2, VH / 2 - 30);
+  ctx.font = '17px "Microsoft YaHei", sans-serif';
+  ctx.fillStyle = '#e8ffd0';
+  ctx.fillText('益生菌已净化线虫，天牛被击败', VW / 2, VH / 2 + 6);
+  ctx.restore();
+}
+
+function drawBossAlert() {
+  if (bossAlertShown <= 0) return;
+  ctx.save();
+  ctx.textAlign = 'center';
+  const a = Math.min(1, bossAlertShown);
+  ctx.globalAlpha = a;
+  ctx.shadowColor = 'rgba(0,0,0,0.8)';
+  ctx.shadowBlur = 8;
+  ctx.font = 'bold 32px "Microsoft YaHei", sans-serif';
+  ctx.fillStyle = '#ff8a4c';
+  ctx.fillText('松墨天牛出现了！', VW / 2, VH * 0.32);
+  ctx.restore();
+}
+
+function drawObjective() {
+  if (victory) return;
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.font = '13px "Microsoft YaHei", sans-serif';
+  ctx.shadowColor = 'rgba(0,0,0,0.7)';
+  ctx.shadowBlur = 3;
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  if (!missionStarted) {
+    ctx.fillText('靠近向导领取无人机，净化线虫灾害', VW / 2, VH - 80);
+  } else if (!bossActive && WORMS.length > 0) {
+    ctx.fillText('发射益生菌净化线虫（鼠标左键）', VW / 2, VH - 80);
+  }
   ctx.restore();
 }
 
@@ -1330,18 +1503,20 @@ function loop(ts) {
   lastT = ts;
 
   timeOfDay = (timeOfDay + dt / DAY_LENGTH) % 1;
+  bossAlertShown = Math.max(0, bossAlertShown - dt);
+  shake = Math.max(0, shake - dt * 1.6);
 
   updatePlayer(dt);
   updateGuide(dt);
-  updateSlimes(dt);
-  updateMining(dt);
-  updateSword(dt);
+  updateWorms(dt);
+  updateBoss(dt);
+  updateDrone(dt);
   updateParticles(dt);
   updateDeath(dt);
+  updateVictory(dt);
   updateCamera(dt);
 
   const s = skyState();
-  // 屏幕震动
   const shx = shake > 0 ? (Math.random() - 0.5) * shake * 14 : 0;
   const shy = shake > 0 ? (Math.random() - 0.5) * shake * 14 : 0;
   ctx.save();
@@ -1352,19 +1527,24 @@ function loop(ts) {
   drawMountains();
   drawClouds(dt);
   drawTiles();
-  drawSlimes();
+  drawWorms();
+  drawLongicorn();
   drawEntity(guide, sprites.guide);
   drawGuideName();
   drawEntity(player, sprites.player);
-  drawSword();
+  drawDrone();
+  drawProbioticShots();
+  drawProbioticPickups();
   drawParticles();
-  drawMiningCrack();
   drawNightOverlay(s);
-  drawHoverHighlight();
   ctx.restore();
   drawHurtFlash();
   drawDeathScreen();
+  drawVictoryScreen();
+  drawBossAlert();
+  drawBossBar();
   drawHpUI();
+  drawObjective();
   updateHotbar();
   updateClock(s);
 }
@@ -1391,7 +1571,7 @@ async function init() {
     sprites.player = removeWhiteBG(pImg);
     setP(0.72);
     sprites.guide = removeWhiteBG(gImg);
-    setP(0.84, '生成世界…');
+    setP(0.84, '生成松林…');
     sprites.mountains = removeWhiteBG(mImg);
 
     await new Promise(r => setTimeout(r, 30));
@@ -1410,8 +1590,8 @@ async function init() {
     cam.x = player.cx - VW / 2;
     cam.y = player.cy - VH / 2;
 
-    // 初始史莱姆
-    for (let i = 0; i < 3; i++) trySpawnSlime();
+    // 初始线虫
+    for (let i = 0; i < 3; i++) trySpawnWorm();
 
     setP(1, '完成！');
     ready = true;
@@ -1428,4 +1608,3 @@ async function init() {
 
 requestAnimationFrame(loop);
 init();
-
