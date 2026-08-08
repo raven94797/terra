@@ -68,11 +68,13 @@ const HOTBAR_ORDER = [T.GRASS, T.DIRT, T.STONE, T.WOOD, T.LEAVES, T.SAND];
 // ---------------- 工具系统 ----------------
 const TOOL_PICKAXE = 'pickaxe';
 const TOOL_REMOTE = 'remote';
+const TOOL_SUMMONER = 'summoner';   // 召唤器：直接召唤天牛Boss
 const TOOL_DEFS = {
   [TOOL_PICKAXE]: { name: '稿子', icon: 'pickaxe' },
   [TOOL_REMOTE]:  { name: '遥控器', icon: 'remote' },
+  [TOOL_SUMMONER]: { name: '召唤器', icon: 'summoner' },
 };
-let ownedTools = [TOOL_PICKAXE];     // 初始只有稿子
+let ownedTools = [TOOL_PICKAXE, TOOL_SUMMONER];  // 初始有稿子+召唤器
 let selTool = TOOL_PICKAXE;          // 当前手持工具
 let remoteGiven = false;             // 向导是否已交付遥控器
 
@@ -397,6 +399,7 @@ function removeWhiteKeepSize(c) {
   g.putImageData(id, 0, 0);
 }
 function removeBossBG(img) {
+  // 纯品红(#ff00ff)色键：保留所有非品红像素，绝不误删暖色主体
   const w = img.width, h = img.height;
   const c = document.createElement('canvas');
   c.width = w; c.height = h;
@@ -404,33 +407,10 @@ function removeBossBG(img) {
   g.drawImage(img, 0, 0);
   const id = g.getImageData(0, 0, w, h);
   const d = id.data;
-  const visited = new Uint8Array(w * h);
-  const stack = [];
-  // 背景判定：偏绿色（G 主导）或偏紫（B 高且较暗）或极暗且非暖色
-  const isBG = i => {
-    const r = d[i * 4], gr = d[i * 4 + 1], b = d[i * 4 + 2];
-    // 绿色调（森林）：G > R+8 且 G > B+15
-    if (gr > r + 8 && gr > b + 15) return true;
-    // 蓝紫调：B > R+15 且 B > G+10（且不太亮，避免误判白高光）
-    if (b > r + 15 && b > gr + 10 && (r + gr + b) < 360) return true;
-    // 极暗（背景阴影）+ 非暖红：明度 < 60 且 R 不显著大于 G/B
-    const lum = r + gr + b;
-    if (lum < 90 && r < gr + 10 && r < b + 10) return true;
-    return false;
-  };
-  // 从四边洪水填充背景
-  for (let x = 0; x < w; x++) { stack.push(x); stack.push((h - 1) * w + x); }
-  for (let y = 0; y < h; y++) { stack.push(y * w); stack.push(y * w + w - 1); }
-  while (stack.length) {
-    const i = stack.pop();
-    if (visited[i] || !isBG(i)) continue;
-    visited[i] = 1;
-    d[i * 4 + 3] = 0;
-    const x = i % w, y = (i / w) | 0;
-    if (x > 0 && !visited[i - 1]) stack.push(i - 1);
-    if (x < w - 1 && !visited[i + 1]) stack.push(i + 1);
-    if (y > 0 && !visited[i - w]) stack.push(i - w);
-    if (y < h - 1 && !visited[i + w]) stack.push(i + w);
+  for (let i = 0; i < w * h; i++) {
+    const r = d[i * 4], gg = d[i * 4 + 1], b = d[i * 4 + 2];
+    // 品红色键：R 高且 G/B 接近 0（保留 magenta = r>200 && gg<80 && b>200）
+    if (r > 180 && gg < 100 && b > 180) d[i * 4 + 3] = 0;
   }
   g.putImageData(id, 0, 0);
   // 裁剪到非透明主体
@@ -693,6 +673,7 @@ const REACH = 8 * TILE;   // 挖掘/放置可达距离（更宽松）
 const mining = { tx: -1, ty: -1, progress: 0 };
 let placeCooldown = 0;
 let remoteCooldown = 0;
+let summonCooldown = 0;
 
 function mouseTile() {
   const wx = mouse.x + cam.x, wy = mouse.y + cam.y;
@@ -750,6 +731,21 @@ function updateTools(dt) {
     if (mouse.right && remoteCooldown <= 0 && !dead) {
       toggleDrone();
       remoteCooldown = 0.3;
+    }
+    return;
+  }
+
+  if (selTool === TOOL_SUMMONER) {
+    // 召唤器：按 F 键召唤天牛 Boss（无视 purified 阈值）
+    if (keys['f'] && summonCooldown <= 0 && !dead && !victory) {
+      if (bossActive) {
+        // 已有 Boss 时则不重复召唤
+        summonCooldown = 0.5;
+      } else {
+        spawnBoss();
+        summonCooldown = 2.0;
+      }
+      keys['f'] = false;
     }
     return;
   }
@@ -2398,6 +2394,8 @@ function drawObjective() {
     ctx.fillText('按住鼠标左键喷洒益生菌净化线虫', VW / 2, VH - 80);
   } else if (selTool === TOOL_PICKAXE) {
     ctx.fillText('左键挖掘方块，右键放置背包中的方块', VW / 2, VH - 80);
+  } else if (selTool === TOOL_SUMMONER) {
+    ctx.fillText('按 F 召唤松墨天牛 Boss', VW / 2, VH - 80);
   }
   // 调试信息（临时，仅排查用）
   if (window.__debug) {
@@ -2465,6 +2463,27 @@ function drawToolIcon(g, tool) {
     g.fillRect(43, 8, 3, 12);
     g.fillStyle = '#9ae66a';
     g.beginPath(); g.arc(44.5, 8, 3, 0, 6.29); g.fill();
+  } else if (tool === TOOL_SUMMONER) {
+    // 召唤器：天牛图标的物品（带翅膀的橙红色甲虫）
+    g.fillStyle = '#2a1a14';
+    g.beginPath(); g.arc(32, 36, 16, 0, 6.29); g.fill();
+    g.fillStyle = '#c98a4a';
+    g.beginPath(); g.arc(32, 32, 12, 0, 6.29); g.fill();
+    g.fillStyle = '#8a5a2b';
+    g.fillRect(20, 30, 24, 6);
+    g.fillStyle = '#fff8d8';
+    g.beginPath(); g.arc(38, 30, 2, 0, 6.29); g.fill();
+    // 翅膀
+    g.fillStyle = 'rgba(216,180,140,0.7)';
+    g.beginPath(); g.ellipse(20, 22, 10, 7, -0.3, 0, 6.29); g.fill();
+    g.beginPath(); g.ellipse(44, 22, 10, 7, 0.3, 0, 6.29); g.fill();
+    // 触角
+    g.strokeStyle = '#2a1a14';
+    g.lineWidth = 2;
+    g.beginPath();
+    g.moveTo(28, 22); g.quadraticCurveTo(22, 10, 14, 8);
+    g.moveTo(36, 22); g.quadraticCurveTo(42, 10, 50, 8);
+    g.stroke();
   }
 }
 function refreshHotbarIcons() {
