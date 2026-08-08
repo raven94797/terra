@@ -112,6 +112,8 @@ let spawnX = 0, spawnY = 0;
 
 // ---------------- 无人机 / 益生菌 ----------------
 const drone = { x: 0, y: 0, vx: 0, vy: 0, rot: 0, rotor: 0, cd: 0, deployed: false };
+// 向导身边的守卫无人机：始终跟随向导，自动攻击附近的线虫
+const guardDrone = { x: 0, y: 0, vx: 0, vy: 0, rot: 0, rotor: 0, cd: 0, target: null };
 let proBiotic = 0;          // 益生菌能量
 const MAX_PROBIOTIC = 6;
 const probioticShots = [];   // 益生菌弹
@@ -142,15 +144,15 @@ const DIALOG = {
   ],
   ready: [                    // 已领取遥控器，正在净化线虫
     '很好！你拿到遥控器和益生菌了。',
-    '拿着遥控器，按右键召唤无人机；再按一次就能收起它。',
-    '无人机召唤后，按住鼠标左键就会喷洒益生菌净化害虫。',
-    '切换到稿子可以挖方块、放方块。等净化足够多线虫，松墨天牛就会出现！',
+    '我身边的这架守卫无人机会自动帮你清除线虫。',
+    '你也能用遥控器召唤自己的无人机，左键喷洒益生菌。',
+    '天牛可不好对付——它会冲锋、发射孢子弹，还会释放线虫！',
   ],
   boss: [                     // 天牛出现
     '小心！那就是传播线虫的松墨天牛！',
-    '它会不断释放小线虫，别被围住了。',
+    '它会朝你冲锋、吐出孢子弹，还会不断释放小线虫！',
     '保持遥控器在手，无人机持续发射益生菌命中它的身体！',
-    '半血之后它会进入狂暴，务必走位躲开！',
+    '半血之后它会进入狂暴，弹幕更密，务必走位躲开！',
   ],
   victory: [                  // 胜利后
     '太好了……松林终于得救了！',
@@ -483,7 +485,7 @@ window.addEventListener('mouseup', e => {
 window.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
 
 // ---------------- 挖掘 / 放置 / 工具使用 ----------------
-const REACH = 5.5 * TILE;
+const REACH = 8 * TILE;   // 挖掘/放置可达距离（更宽松）
 const mining = { tx: -1, ty: -1, progress: 0 };
 let placeCooldown = 0;
 let remoteCooldown = 0;
@@ -554,7 +556,7 @@ function updateTools(dt) {
       mining.tx = tx; mining.ty = ty; mining.progress = 0;
     }
     const def = TILE_DEF[target];
-    mining.progress += dt / def.hard;
+    mining.progress += dt * 2.5 / def.hard;
     if (Math.random() < dt * 14) sfxDig();
     if (Math.random() < dt * 30) {
       const src = tex[target];
@@ -846,19 +848,27 @@ function spawnWormParticles(w) {
   }
 }
 
-// ---------------- 天牛 Boss ----------------
+// ---------------- 天牛 Boss（蜂后式多模式） ----------------
+const bossShots = []; // 天牛的毒素弹
 class Longicorn extends Entity {
   constructor(cx, y) {
-    super(cx - 40, y - 32, 80, 32);
-    this.maxHp = 300;
+    super(cx - 44, y - 30, 88, 30);
+    this.maxHp = 340;
     this.hp = this.maxHp;
     this.phase = 0;
+    this.mode = 'chase';         // chase 追袭 / dash 冲锋 / volley 弹幕
+    this.modeTimer = 3;
     this.attackTimer = 2.5;
-    this.speed = 2.2;
+    this.dashTimer = 0;
+    this.dashVX = 0;
+    this.speed = 2.4;
+    this.baseSpeed = 2.4;
     this.dir = Math.random() < 0.5 ? -1 : 1;
     this.animT = 0;
     this.enraged = false;
     this.flash = 0;
+    this.hoverY = y;
+    this.pendingDash = null;
   }
 }
 
@@ -878,34 +888,114 @@ function updateBoss(dt) {
   b.animT += dt;
   b.phase += dt * 4;
   b.attackTimer -= dt;
+  b.modeTimer -= dt;
 
   const dx = player.cx - b.cx;
+  const dy = player.cy - b.cy;
+  const dist = Math.hypot(dx, dy) || 1;
 
-  // 朝玩家移动（天牛缓慢飞行，贴近玩家）
-  b.dir = dx > 0 ? 1 : -1;
-  b.vx = lerp(b.vx, b.dir * b.speed, 0.05);
-  b.vy = lerp(b.vy, (player.cy - b.cy) * 0.02, 0.05);
-  b.physics();
-
-  // 释放小线虫
-  if (b.attackTimer <= 0) {
-    for (let i = 0; i < 2 + (b.enraged ? 1 : 0); i++) {
-      spawnWorm(b.cx + (i - 0.5) * 20, b.cy + b.h / 2);
-    }
+  // 半血狂暴
+  if (!b.enraged && b.hp <= b.maxHp / 2) {
+    b.enraged = true;
+    b.baseSpeed = 3.2;
     sfxBoss();
-    b.attackTimer = 3 + (b.enraged ? 1.5 : 3.5);
   }
+  b.speed = b.baseSpeed;
 
   // 触碰伤害
   if (overlap(b, player) && invuln <= 0 && !dead) {
     hurtPlayer(18, dx > 0 ? 7 : -7);
   }
 
-  // 半血狂暴
-  if (!b.enraged && b.hp <= b.maxHp / 2) {
-    b.enraged = true;
-    b.speed = 3.1;
-    sfxBoss();
+  // 切换攻击模式
+  if (b.modeTimer <= 0) {
+    const modes = ['dash', 'volley', 'chase'];
+    // 非狂暴时偏好追袭+冲锋；狂暴后更频繁弹幕
+    const pick = b.enraged
+      ? ['volley', 'dash', 'volley', 'chase']
+      : ['chase', 'dash', 'chase', 'volley'];
+    b.mode = pick[(Math.random() * pick.length) | 0];
+    b.modeTimer = b.mode === 'volley' ? 2.5 : (b.enraged ? 2.6 : 3.4);
+    if (b.mode === 'dash') {
+      // 锁定玩家位置并冲锋
+      b.pendingDash = { vx: (dx / dist) * (b.speed * 3.2), vy: (dy / dist) * (b.speed * 3.2) };
+      b.dashTimer = 0.55;
+    }
+  }
+
+  switch (b.mode) {
+    case 'chase': {
+      // 追袭：缓慢贴近玩家
+      b.dir = dx > 0 ? 1 : -1;
+      b.vx = lerp(b.vx, b.dir * b.speed * 0.7, 0.06);
+      b.vy = lerp(b.vy, (dy / dist) * b.speed * 0.6, 0.06);
+      // 追袭中偶发释放线虫
+      if (b.attackTimer <= 0) {
+        for (let i = 0; i < 1 + (b.enraged ? 1 : 0); i++) spawnWorm(b.cx, b.cy + b.h / 2);
+        sfxBoss();
+        b.attackTimer = 2.6 + (b.enraged ? 1 : 2);
+      }
+      break;
+    }
+    case 'dash': {
+      // 冲锋：锁定方向快速冲刺
+      if (b.dashTimer > 0) {
+        b.dashTimer -= dt;
+        b.vx = lerp(b.vx, b.pendingDash.vx, 0.25);
+        b.vy = lerp(b.vy, b.pendingDash.vy, 0.25);
+      } else {
+        b.vx = lerp(b.vx, 0, 0.1);
+        b.vy = lerp(b.vy, 0, 0.1);
+      }
+      break;
+    }
+    case 'volley': {
+      // 弹幕：向玩家发射毒素弹
+      b.vx = lerp(b.vx, 0, 0.08);
+      b.vy = lerp(b.vy, 0, 0.08);
+      if (b.attackTimer <= 0) {
+        const n = b.enraged ? 5 : 3;
+        for (let i = 0; i < n; i++) {
+          const ang = Math.atan2(dy, dx) + (i - (n - 1) / 2) * 0.22;
+          bossShots.push({
+            x: b.cx, y: b.cy + b.h / 2,
+            vx: Math.cos(ang) * 5.2, vy: Math.sin(ang) * 5.2,
+            life: 3.5,
+          });
+        }
+        sfxBoss();
+        b.attackTimer = b.enraged ? 0.9 : 1.5;
+      }
+      break;
+    }
+  }
+
+  b.physics();
+
+  // 毒素弹
+  for (let i = bossShots.length - 1; i >= 0; i--) {
+    const s = bossShots[i];
+    s.x += s.vx; s.y += s.vy;
+    s.life -= dt;
+    let used = false;
+    if (s.life <= 0) used = true;
+    const tx = Math.floor(s.x / TILE), ty = Math.floor(s.y / TILE);
+    if (isSolidType(getTile(tx, ty))) used = true;
+    if (!used && s.x > player.x - 4 && s.x < player.x + player.w + 4 && s.y > player.y - 4 && s.y < player.y + player.h + 4) {
+      hurtPlayer(10, s.vx > 0 ? 4 : -4);
+      used = true;
+    }
+    if (used) {
+      for (let j = 0; j < 5; j++) {
+        particles.push({
+          x: s.x, y: s.y,
+          vx: (Math.random() - 0.5) * 3, vy: (Math.random() - 0.5) * 3,
+          life: 0.3, t: 0, color: '#b06a3a', size: 3 + Math.random() * 3,
+          spin: 0, rot: 0, rect: true,
+        });
+      }
+      bossShots.splice(i, 1);
+    }
   }
 
   if (b.hp <= 0) {
@@ -936,6 +1026,7 @@ function bossDefeated() {
       spin: 0, rot: 0, rect: true,
     });
   }
+  bossShots.length = 0;
   longicorn = null;
   bossActive = false;
   victory = true;
@@ -986,8 +1077,10 @@ function updateDrone(dt) {
     sfxDrone();
     sfxProbiotic();
   }
+}
 
-  // 益生菌弹
+// 益生菌弹碰撞（玩家无人机与守卫无人机共用）
+function updateProbioticShots(dt) {
   for (let i = probioticShots.length - 1; i >= 0; i--) {
     const s = probioticShots[i];
     s.x += s.vx; s.y += s.vy;
@@ -1024,6 +1117,61 @@ function updateDrone(dt) {
       }
       probioticShots.splice(i, 1);
     }
+  }
+}
+
+// ---------------- 守卫无人机（向导身边，自动攻击线虫） ----------------
+function updateGuardDrone(dt) {
+  const g = guardDrone;
+  g.rotor += dt * 40;
+  g.cd -= dt;
+  if (!missionStarted) {
+    // 任务未开始：在向导旁待机
+    g.x = guide.cx;
+    g.y = guide.y - 70;
+    g.rot = Math.sin(performance.now() * 0.002) * 0.1;
+    return;
+  }
+  // 跟随向导，悬浮在向导头顶
+  const tx = guide.cx;
+  const ty = guide.y + guide.h * 0.15 - 78;
+  g.vx = lerp(g.vx, (tx - g.x) * 0.12, 0.1);
+  g.vy = lerp(g.vy, (ty - g.y) * 0.09, 0.1);
+  g.x += g.vx * dt;
+  g.y += g.vy * dt;
+  g.rot = clamp((tx - g.x) * 0.01, -0.25, 0.25);
+
+  // 寻找最近的线虫目标
+  let best = null, bestD = Infinity;
+  for (const w of WORMS) {
+    const d = (w.cx - g.x) ** 2 + (w.cy - g.y) ** 2;
+    if (d < bestD && d < TILE * TILE * 30 * 30) { // 射程
+      bestD = d;
+      best = w;
+    }
+  }
+  // 若有天牛Boss，也优先锁定（天牛更优先）
+  if (bossActive && longicorn) {
+    const d = (longicorn.cx - g.x) ** 2 + (longicorn.cy - g.y) ** 2;
+    if (d < TILE * TILE * 30 * 30 && d < bestD * 1.2) {
+      best = longicorn;
+    }
+  }
+  g.target = best;
+
+  // 自动攻击
+  if (g.target && g.cd <= 0) {
+    const t = g.target;
+    const dx = t.cx - g.x, dy = t.cy - g.y;
+    const len = Math.hypot(dx, dy) || 1;
+    probioticShots.push({
+      x: g.x, y: g.y,
+      vx: (dx / len) * 9, vy: (dy / len) * 9,
+      life: 1.2,
+    });
+    g.cd = 0.45;
+    sfxDrone();
+    if (Math.random() < 0.4) sfxProbiotic();
   }
 }
 
@@ -1342,55 +1490,55 @@ function drawDialog() {
     dialogTypewriter += 2;
   }
 
-  const boxW = Math.min(VW * 0.72, 680);
-  const boxH = 130;
-  const bx = VW / 2 - boxW / 2, by = VH - boxH - 26;
+  const boxW = Math.min(VW * 0.82, 860);
+  const boxH = 190;
+  const bx = VW / 2 - boxW / 2, by = VH - boxH - 22;
   ctx.save();
-  ctx.fillStyle = 'rgba(14,20,32,0.88)';
-  roundRectPath(ctx, bx, by, boxW, boxH, 14);
+  ctx.fillStyle = 'rgba(14,20,32,0.9)';
+  roundRectPath(ctx, bx, by, boxW, boxH, 18);
   ctx.fill();
-  ctx.strokeStyle = 'rgba(155,230,106,0.7)';
-  ctx.lineWidth = 3;
-  roundRectPath(ctx, bx, by, boxW, boxH, 14);
+  ctx.strokeStyle = 'rgba(155,230,106,0.75)';
+  ctx.lineWidth = 4;
+  roundRectPath(ctx, bx, by, boxW, boxH, 18);
   ctx.stroke();
 
   // 头像框
-  const avR = 34;
+  const avR = 46;
   ctx.fillStyle = '#2a3a28';
   ctx.beginPath();
-  ctx.arc(bx + 42, by + boxH / 2, avR, 0, 6.29);
+  ctx.arc(bx + 62, by + boxH / 2, avR, 0, 6.29);
   ctx.fill();
   ctx.strokeStyle = '#9ae66a';
-  ctx.lineWidth = 3;
+  ctx.lineWidth = 4;
   ctx.beginPath();
-  ctx.arc(bx + 42, by + boxH / 2, avR, 0, 6.29);
+  ctx.arc(bx + 62, by + boxH / 2, avR, 0, 6.29);
   ctx.stroke();
   // 头像（守林人简笔画）
   ctx.fillStyle = '#e8b57a';
   ctx.beginPath();
-  ctx.arc(bx + 42, by + boxH / 2 - 4, 14, 0, 6.29);
+  ctx.arc(bx + 62, by + boxH / 2 - 6, 19, 0, 6.29);
   ctx.fill();
   ctx.fillStyle = '#5a3a22';
-  ctx.fillRect(bx + 34, by + boxH / 2 - 14, 16, 10);
+  ctx.fillRect(bx + 51, by + boxH / 2 - 19, 22, 14);
   ctx.fillStyle = '#3a2a18';
-  ctx.fillRect(bx + 28, by + boxH / 2 + 6, 28, 4);
+  ctx.fillRect(bx + 43, by + boxH / 2 + 8, 38, 5);
 
   // 名字
   ctx.textAlign = 'left';
-  ctx.font = 'bold 16px "Microsoft YaHei", sans-serif';
+  ctx.font = 'bold 20px "Microsoft YaHei", sans-serif';
   ctx.fillStyle = '#ffe98a';
-  ctx.fillText('守林人', bx + 90, by + 28);
+  ctx.fillText('守林人', bx + 130, by + 40);
   // 对话文本（打字机）
-  ctx.font = '16px "Microsoft YaHei", sans-serif';
+  ctx.font = '19px "Microsoft YaHei", sans-serif';
   ctx.fillStyle = '#eef2ff';
-  wrapText(showText, bx + 90, by + 56, boxW - 110, 26);
+  wrapText(showText, bx + 130, by + 78, boxW - 160, 34);
   // 提示继续
   if (dialogTypewriter >= line.length) {
     const t = Math.floor(performance.now() / 400) % 2 === 0;
     ctx.fillStyle = t ? '#9ae66a' : '#3a4a3a';
-    ctx.font = '14px "Microsoft YaHei", sans-serif';
+    ctx.font = '16px "Microsoft YaHei", sans-serif';
     ctx.textAlign = 'right';
-    ctx.fillText('▼ 按 E / Esc 继续', bx + boxW - 20, by + boxH - 12);
+    ctx.fillText('▼ 按 E / Esc 继续', bx + boxW - 24, by + boxH - 16);
   }
   ctx.restore();
 }
@@ -1505,54 +1653,134 @@ function drawLongicorn() {
   const b = longicorn;
   const x = b.x - cam.x, y = b.y - cam.y;
   const w = b.w, h = b.h;
-  const body = b.flash > 0 ? '#fff' : (b.enraged ? '#e05b2a' : '#b06a3a');
-  const dark = b.flash > 0 ? '#eee' : (b.enraged ? '#a33f18' : '#7a4522');
-  const wingA = Math.sin(b.animT * 20) * 0.9;
+  const flash = b.flash > 0;
+  const body = flash ? '#fff' : (b.enraged ? '#e05b2a' : '#b8773f');
+  const dark = flash ? '#eee' : (b.enraged ? '#a33f18' : '#8a5a2b');
+  const stripe = flash ? '#ddd' : (b.enraged ? '#7a2f10' : '#5a3a18');
+  const wingFlap = Math.sin(b.animT * 22) * 0.85;
   ctx.save();
   ctx.translate(x + w / 2, y + h / 2);
   ctx.rotate(b.dir > 0 ? 0 : Math.PI);
-  // 翅膀（张开）
+
+  // ---- 尾刺（腹部尖端） ----
+  ctx.fillStyle = dark;
+  ctx.beginPath();
+  ctx.moveTo(-w / 2 + 2, -h / 2 + 2);
+  ctx.lineTo(-w / 2 - 12, 0);
+  ctx.lineTo(-w / 2 + 2, h / 2 - 2);
+  ctx.closePath();
+  ctx.fill();
+
+  // ---- 六足（动态） ----
+  ctx.strokeStyle = dark;
+  ctx.lineWidth = 2.5;
+  ctx.lineCap = 'round';
+  const legSwing = Math.sin(b.animT * 6);
+  for (let i = 0; i < 3; i++) {
+    const lx = -10 - i * 14;
+    const amp = Math.sin(b.animT * 6 + i * 1.1);
+    ctx.beginPath();
+    ctx.moveTo(lx, h / 2);
+    ctx.lineTo(lx - 4, h / 2 + 10);
+    ctx.lineTo(lx - 9 + amp * 2, h / 2 + 16);
+    ctx.moveTo(lx, -h / 2);
+    ctx.lineTo(lx - 4, -h / 2 - 10);
+    ctx.lineTo(lx - 9 - amp * 2, -h / 2 - 16);
+    ctx.stroke();
+  }
+
+  // ---- 半透明翅膀（蜂后式，双层纹理） ----
   ctx.save();
-  ctx.rotate(wingA);
+  ctx.rotate(wingFlap);
+  ctx.globalAlpha = flash ? 0.9 : 0.55;
+  // 上翅
   ctx.fillStyle = body;
   ctx.beginPath();
-  ctx.ellipse(-6, -14, 12, 16, 0, 0, 6.29);
+  ctx.ellipse(-4, -16, 13, 20, -0.3, 0, 6.29);
   ctx.fill();
-  ctx.restore();
-  ctx.save();
-  ctx.rotate(-wingA);
+  ctx.strokeStyle = 'rgba(40,20,10,0.5)';
+  ctx.lineWidth = 1.5;
   ctx.beginPath();
-  ctx.ellipse(-6, 14, 12, 16, 0, 0, 6.29);
+  ctx.moveTo(2, -16); ctx.lineTo(-10, -32);
+  ctx.stroke();
+  // 下翅（小）
+  ctx.fillStyle = stripe;
+  ctx.beginPath();
+  ctx.ellipse(-2, -30, 9, 13, 0.3, 0, 6.29);
+  ctx.fill();
+  // 镜像翅膀
+  ctx.fillStyle = body;
+  ctx.beginPath();
+  ctx.ellipse(-4, 16, 13, 20, 0.3, 0, 6.29);
+  ctx.fill();
+  ctx.fillStyle = stripe;
+  ctx.beginPath();
+  ctx.ellipse(-2, 30, 9, 13, -0.3, 0, 6.29);
   ctx.fill();
   ctx.restore();
-  // 身体
-  ctx.fillStyle = dark;
-  roundRectPath(ctx, -w / 2 + 8, -h / 2, w - 16, h, 8);
+
+  // ---- 胸节（主身体） ----
+  ctx.fillStyle = body;
+  roundRectPath(ctx, -w / 2 + 20, -h / 2, w - 44, h, 10);
   ctx.fill();
-  // 斑纹
-  ctx.fillStyle = '#3a2210';
-  for (let i = 0; i < 4; i++) {
+  // 胸节高光
+  ctx.fillStyle = flash ? '#fff' : (b.enraged ? '#ff8a55' : '#d99a5a');
+  roundRectPath(ctx, -w / 2 + 22, -h / 2 + 2, w - 48, h / 2 - 2, 6);
+  ctx.fill();
+
+  // ---- 腹部条纹（黄黑相间，蜂后特征） ----
+  ctx.fillStyle = stripe;
+  const segs = 4;
+  const segW = (w - 44) / segs;
+  for (let i = 1; i < segs; i++) {
+    ctx.fillRect(-w / 2 + 20 + i * segW - 2, -h / 2 + 1, 3, h - 2);
+  }
+  // 腹部斑点
+  ctx.fillStyle = stripe;
+  for (let i = 0; i < 3; i++) {
     ctx.beginPath();
-    ctx.arc(-8 - i * 8, 0, 3, 0, 6.29);
+    ctx.arc(-w / 2 + 34 + i * 12, 0, 2.5, 0, 6.29);
     ctx.fill();
   }
-  // 头部 + 触角
+
+  // ---- 头部 + 口器 + 触角 ----
   ctx.fillStyle = dark;
   ctx.beginPath();
-  ctx.arc(w / 2 - 8, 0, 9, 0, 6.29);
+  ctx.arc(w / 2 - 8, 0, 10, 0, 6.29);
   ctx.fill();
+  ctx.fillStyle = body;
+  ctx.beginPath();
+  ctx.arc(w / 2 - 6, 0, 6.5, 0, 6.29);
+  ctx.fill();
+  // 口器（咀嚼式）
+  ctx.strokeStyle = '#2a1a10';
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.moveTo(w / 2, 3);
+  ctx.lineTo(w / 2 + 8, 6);
+  ctx.moveTo(w / 2, -3);
+  ctx.lineTo(w / 2 + 8, -6);
+  ctx.stroke();
+  // 长触角（天牛标志性）
+  const antennae = Math.sin(b.animT * 8);
   ctx.strokeStyle = '#2a1a10';
   ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.moveTo(w / 2 - 4, -6);
-  ctx.lineTo(w / 2 + 12, -16 + Math.sin(b.animT * 8) * 2);
-  ctx.moveTo(w / 2 - 4, 6);
-  ctx.lineTo(w / 2 + 12, 16 + Math.cos(b.animT * 8) * 2);
+  ctx.moveTo(w / 2 - 4, -5);
+  ctx.quadraticCurveTo(w / 2 + 10, -22 + antennae * 3, w / 2 + 26, -18 + antennae * 5);
+  ctx.moveTo(w / 2 - 4, 5);
+  ctx.quadraticCurveTo(w / 2 + 10, 22 - antennae * 3, w / 2 + 26, 18 - antennae * 5);
   ctx.stroke();
-  // 眼睛
+  // 复眼（发光）
   ctx.fillStyle = '#ffd94d';
-  ctx.beginPath(); ctx.arc(w / 2 - 4, -4, 3, 0, 6.29); ctx.fill();
-  ctx.beginPath(); ctx.arc(w / 2 - 4, 4, 3, 0, 6.29); ctx.fill();
+  ctx.beginPath(); ctx.arc(w / 2 - 2, -4, 3.5, 0, 6.29); ctx.fill();
+  ctx.fillStyle = '#ff8a00';
+  ctx.beginPath(); ctx.arc(w / 2 - 2, -4, 1.5, 0, 6.29); ctx.fill();
+  ctx.fillStyle = '#ffd94d';
+  ctx.beginPath(); ctx.arc(w / 2 - 2, 4, 3.5, 0, 6.29); ctx.fill();
+  ctx.fillStyle = '#ff8a00';
+  ctx.beginPath(); ctx.arc(w / 2 - 2, 4, 1.5, 0, 6.29); ctx.fill();
+
   ctx.restore();
 }
 
@@ -1667,6 +1895,81 @@ function drawDrone() {
   ctx.restore();
 }
 
+// ---------------- 守卫无人机绘制（向导身边） ----------------
+function drawGuardDrone() {
+  const g = guardDrone;
+  const x = g.x - cam.x, y = g.y - cam.y;
+  const now = performance.now() * 0.001;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(g.rot);
+  ctx.globalAlpha = 0.92;
+
+  // 两条机械臂（更短小）
+  ctx.strokeStyle = '#7a8f66';
+  ctx.lineWidth = 2.5;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(-8, 0); ctx.lineTo(-18, -9);
+  ctx.moveTo(8, 0); ctx.lineTo(18, -9);
+  ctx.stroke();
+
+  // 双旋翼
+  const rotorSpin = now * 45;
+  for (const p of [{ px: -18, py: -9 }, { px: 18, py: -9 }]) {
+    ctx.fillStyle = '#b8c6d4';
+    ctx.beginPath();
+    ctx.arc(p.px, p.py, 3.5, 0, 6.29);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(200,240,180,0.7)';
+    ctx.lineWidth = 2;
+    for (let i = 0; i < 2; i++) {
+      const a = rotorSpin + i * Math.PI;
+      ctx.beginPath();
+      ctx.moveTo(p.px + Math.cos(a) * 10, p.py + Math.sin(a) * 10);
+      ctx.lineTo(p.px - Math.cos(a) * 10, p.py - Math.sin(a) * 10);
+      ctx.stroke();
+    }
+  }
+
+  // 机身（守卫绿）
+  ctx.fillStyle = '#5a7a4a';
+  roundRectPath(ctx, -12, -4, 24, 13, 5);
+  ctx.fill();
+  ctx.fillStyle = '#7aa866';
+  roundRectPath(ctx, -12, -4, 24, 5, 4);
+  ctx.fill();
+  // 守卫标记（叶片徽章）
+  ctx.fillStyle = '#c8ff7a';
+  ctx.beginPath();
+  ctx.arc(0, 1, 3, 0, 6.29);
+  ctx.fill();
+  ctx.strokeStyle = '#e8ffd0';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.arc(0, 1, 5.5, 0, 6.29);
+  ctx.stroke();
+
+  // 尾部小推进器
+  ctx.fillStyle = '#4a5a3a';
+  ctx.beginPath();
+  ctx.moveTo(-12, 0); ctx.lineTo(-17, 0);
+  ctx.strokeStyle = 'rgba(180,255,140,0.6)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(-17, 0); ctx.lineTo(-21, 0);
+  ctx.stroke();
+
+  // 底部益生菌舱（发光）
+  const glow = 0.5 + 0.5 * Math.sin(now * 6);
+  ctx.fillStyle = `rgba(155,230,106,${0.6 + glow * 0.4})`;
+  ctx.beginPath();
+  ctx.arc(0, 6, 3.5 + glow * 1, 0, 6.29);
+  ctx.fill();
+
+  ctx.restore();
+}
+
 // ---------------- 益生菌弹绘制 ----------------
 function drawProbioticShots() {
   for (const s of probioticShots) {
@@ -1680,6 +1983,26 @@ function drawProbioticShots() {
     ctx.arc(s.x - cam.x, s.y - cam.y, 5, 0, 6.29);
     ctx.fill();
     ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(s.x - cam.x - 1, s.y - cam.y - 1, 2, 0, 6.29);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+// 天牛毒素弹绘制
+function drawBossShots() {
+  for (const s of bossShots) {
+    ctx.save();
+    ctx.fillStyle = 'rgba(176,58,42,0.35)';
+    ctx.beginPath();
+    ctx.arc(s.x - cam.x, s.y - cam.y, 8, 0, 6.29);
+    ctx.fill();
+    ctx.fillStyle = '#d36a2a';
+    ctx.beginPath();
+    ctx.arc(s.x - cam.x, s.y - cam.y, 4.5, 0, 6.29);
+    ctx.fill();
+    ctx.fillStyle = '#ffb25a';
     ctx.beginPath();
     ctx.arc(s.x - cam.x - 1, s.y - cam.y - 1, 2, 0, 6.29);
     ctx.fill();
@@ -1890,6 +2213,15 @@ function drawObjective() {
   } else if (selTool === TOOL_PICKAXE) {
     ctx.fillText('左键挖掘方块，右键放置背包中的方块', VW / 2, VH - 80);
   }
+  // 调试信息（临时，仅排查用）
+  if (window.__debug) {
+    const mt = mouseTile();
+    ctx.textAlign = 'left';
+    ctx.font = '12px monospace';
+    ctx.fillStyle = '#ff5';
+    ctx.fillText(`tool=${selTool} L=${mouse.left} R=${mouse.right}`, 12, VH - 60);
+    ctx.fillText(`cell=${mt.tx},${mt.ty} reach=${inReach(mt.tx, mt.ty)} prog=${mining.progress.toFixed(2)}`, 12, VH - 42);
+  }
   ctx.restore();
 }
 
@@ -2006,6 +2338,21 @@ function loop(ts) {
   if (!ready) return;
   let dt = Math.min((ts - lastT) / 1000, 0.05);
   lastT = ts;
+  try {
+    frame(dt, ts);
+  } catch (e) {
+    console.error('frame error:', e);
+    if (window.__errCount === undefined) window.__errCount = 0;
+    window.__errCount++;
+    ctx.save();
+    ctx.font = '14px monospace';
+    ctx.fillStyle = '#f44';
+    ctx.fillText('ERR: ' + e.message, 10, 30);
+    ctx.restore();
+  }
+}
+
+function frame(dt, ts) {
 
   timeOfDay = (timeOfDay + dt / DAY_LENGTH) % 1;
   bossAlertShown = Math.max(0, bossAlertShown - dt);
@@ -2018,6 +2365,8 @@ function loop(ts) {
   updateWorms(dt);
   updateBoss(dt);
   updateDrone(dt);
+  updateGuardDrone(dt);
+  updateProbioticShots(dt);
   updateProbioticPickup(dt);
   updateParticles(dt);
   updateDeath(dt);
@@ -2037,10 +2386,12 @@ function loop(ts) {
   drawTiles();
   drawWorms();
   drawLongicorn();
+  drawBossShots();
   drawEntity(guide, sprites.guide);
   drawGuideName();
   drawEntity(player, sprites.player);
   drawDrone();
+  drawGuardDrone();
   drawProbioticShots();
   drawProbioticPickups();
   drawParticles();
@@ -2106,6 +2457,7 @@ async function init() {
 
     setP(1, '完成！');
     ready = true;
+    window.__debug = true; // 临时开启调试诊断
     setTimeout(() => {
       const lo = document.getElementById('loading');
       lo.style.opacity = '0';
