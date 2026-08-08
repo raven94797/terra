@@ -174,10 +174,24 @@ function loadImage(src) {
     .then(blob => new Promise((res, rej) => {
       const url = URL.createObjectURL(blob);
       const im = new Image();
-      im.onload = () => { URL.revokeObjectURL(url); res(im); };
-      im.onerror = () => { URL.revokeObjectURL(url); rej(new Error('load fail: ' + src)); };
+      const timer = setTimeout(() => { URL.revokeObjectURL(url); rej(new Error('load timeout: ' + src)); }, 10000);
+      im.onload = () => { clearTimeout(timer); URL.revokeObjectURL(url); res(im); };
+      im.onerror = () => { clearTimeout(timer); URL.revokeObjectURL(url); rej(new Error('load fail: ' + src)); };
       im.src = url;
     }));
+}
+
+// 把大图缩小到不超过 maxW 宽（等比），降低抠图/处理开销，避免同步阻塞
+function downscaleImage(img, maxW = 520) {
+  const w = img.width, h = img.height;
+  if (w <= maxW) return img;
+  const ratio = maxW / w;
+  const nw = Math.round(w * ratio), nh = Math.round(h * ratio);
+  const c = document.createElement('canvas');
+  c.width = nw; c.height = nh;
+  c.getContext('2d').imageSmoothingEnabled = true;
+  c.getContext('2d').drawImage(img, 0, 0, nw, nh);
+  return c;
 }
 
 function makeTile(img, cropTop = 0) {
@@ -2630,7 +2644,8 @@ async function init() {
     setP(0.05, '加载方块纹理…');
     const tileTypes = Object.keys(TILE_DEF).map(Number);
     const tileImgs = await Promise.all(tileTypes.map(t => loadImage(TILE_DEF[t].img)));
-    tileTypes.forEach((t, i) => { tex[t] = makeTile(tileImgs[i], TILE_DEF[t].cropTop || 0); });
+    // tiles 只需 40px 格子显示，缩小到 128px 大幅减小文件体积，避免 GitHub 上大图 HTTP/2 错误
+    tileTypes.forEach((t, i) => { tex[t] = makeTile(downscaleImage(tileImgs[i], 128), TILE_DEF[t].cropTop || 0); });
     setP(0.4, '处理角色素材…');
 
     const [pImg, gImg, pWalkImg, gWalkImg, mImg, bossImg] = await Promise.all([
@@ -2641,12 +2656,13 @@ async function init() {
       loadImage('assets/bg/mountains.png'),
       loadImage('assets/boss/longicorn.png'),
     ]);
-    setP(0.6, '抠除背景…');
-    sprites.player = splitSheetFrames(removeWhiteBG(pWalkImg), 5);
+    setP(0.6, '处理角色动画…');
+    // 先缩小大图再抠图，避免同步处理 1536×1024 等大图导致主线程卡死
+    sprites.player = splitSheetFrames(removeWhiteBG(downscaleImage(pWalkImg, 600)), 5);
     setP(0.72);
-    sprites.guide = splitSheetFrames(removeWhiteBG(gWalkImg), 5);
+    sprites.guide = splitSheetFrames(removeWhiteBG(downscaleImage(gWalkImg, 600)), 5);
     setP(0.82, '召唤天牛…');
-    sprites.longicorn = removeBossBG(bossImg);
+    sprites.longicorn = removeBossBG(downscaleImage(bossImg, 420));
     setP(0.9, '生成松林…');
     sprites.mountains = removeWhiteBG(mImg);
 
