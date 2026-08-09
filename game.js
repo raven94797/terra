@@ -1071,8 +1071,8 @@ function spawnWormParticles(w) {
 const bossShots = []; // 天牛的毒素弹
 class Longicorn extends Entity {
   constructor(cx, y) {
-    super(cx - 44, y - 30, 88, 30);
-    this.maxHp = 340;
+    super(cx - 75, y - 52, 150, 52);
+    this.maxHp = 380;
     this.hp = this.maxHp;
     this.phase = 0;
     this.mode = 'chase';         // chase 追袭 / dash 冲锋 / volley 弹幕
@@ -1098,6 +1098,23 @@ function spawnBoss() {
   bossActive = true;
   bossAlertShown = 2.2;
   sfxBoss();
+}
+
+// 天牛撞击摧毁其身体经过的方块（留出通道）
+function bossSmashBlocks(b) {
+  const x0 = Math.max(0, Math.floor((b.x + b.w * 0.2) / TILE));
+  const x1 = Math.min(WORLD_W - 1, Math.floor((b.x + b.w * 0.8) / TILE));
+  const y0 = Math.max(0, Math.floor((b.y + b.h * 0.3) / TILE));
+  const y1 = Math.min(WORLD_H - 1, Math.floor((b.y + b.h * 0.85) / TILE));
+  for (let ty = y0; ty <= y1; ty++) {
+    for (let tx = x0; tx <= x1; tx++) {
+      const v = getTile(tx, ty);
+      if (v === T.AIR || v === T.LEAVES) continue;
+      setTile(tx, ty, T.AIR);
+      spawnBreakParticles(tx, ty, v);
+      if (Math.random() < 0.5) sfxDig();
+    }
+  }
 }
 
 function updateBoss(dt) {
@@ -1190,6 +1207,9 @@ function updateBoss(dt) {
   }
 
   b.physics();
+
+  // ---- 天牛撞击摧毁方块 ----
+  bossSmashBlocks(b);
 
   // 毒素弹
   for (let i = bossShots.length - 1; i >= 0; i--) {
@@ -1926,12 +1946,14 @@ function drawLongicorn() {
   let dw, dh;
   if (spr) {
     const ar = spr.width / spr.height;
-    dw = h * 1.9;         // 比碰撞体更高大，更威压
+    dw = h * 2.4;         // 比碰撞体更高大，更威压
     dh = dw / ar;
-    if (dh < h * 1.5) { dh = h * 1.5; dw = dh * ar; }
+    if (dh < h * 1.9) { dh = h * 1.9; dw = dh * ar; }
   }
 
   ctx.save();
+  // 关闭平滑：像素风放大时保持锐利
+  ctx.imageSmoothingEnabled = false;
   ctx.translate(x + w / 2, y + h / 2 + hover);
   ctx.scale(face, 1);
 
@@ -1943,7 +1965,7 @@ function drawLongicorn() {
     ctx.shadowColor = '#ff3a1a';
     ctx.shadowBlur = 26;
     ctx.beginPath();
-    ctx.ellipse(0, 0, w * 0.7, h * 0.95, 0, 0, 6.29);
+    ctx.ellipse(0, 0, w * 0.8, h * 1.0, 0, 0, 6.29);
     ctx.fillStyle = '#ff4a1a';
     ctx.fill();
     ctx.restore();
