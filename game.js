@@ -1310,8 +1310,8 @@ function updateWorms(dt) {
   }
 }
 
-// 线虫侵染松树：线虫接近树木根部（树干WOOD）时，在树根附近感染一小片树叶（感染起始点）
-// 感染会随时间逐渐向相邻树叶蔓延（见 spreadInfection）
+// 线虫侵染松树：线虫触碰到树根（树干WOOD）时，
+// 感染树根正上方第一个树叶，作为感染起始点，之后由 spreadInfection 逐渐蔓延
 function wormInfect(w) {
   const cx = Math.floor(w.cx / TILE), cy = Math.floor(w.cy / TILE);
   // 检查以线虫为中心 5x5 范围内是否有树干（树根）
@@ -1319,14 +1319,34 @@ function wormInfect(w) {
     for (let dx = -2; dx <= 2; dx++) {
       const tx = cx + dx, ty = cy + dy;
       if (getTile(tx, ty) === T.WOOD) {
-        // 在树根附近找一片健康树叶作为感染起始点
-        const leafX = tx + (Math.random() < 0.5 ? -1 : 1) * (1 + Math.floor(Math.random() * 3));
-        const leafY = ty - 1 - Math.floor(Math.random() * 3);
-        if (getTile(leafX, leafY) === T.LEAVES) {
-          setTile(leafX, leafY, T.DEADPINE);
-        }
+        // 从该树干格向上找到树冠最下方的第一个健康树叶（先沿树干向上，再找树冠底缘）
+        infectFirstLeafFromRoot(tx, ty);
         return; // 每帧只感染一次，避免一次性大片
       }
+    }
+  }
+}
+
+// 从树根向上，找到该树树冠最下方第一个健康树叶并感染它
+function infectFirstLeafFromRoot(rx, ry) {
+  // 先向上找到树冠底部（树干顶端）
+  let ty = ry;
+  while (getTile(rx, ty - 1) === T.WOOD) ty--;
+  // 从树冠底部往上找第一个健康树叶（T.LEAVES）
+  for (let y = ty - 1; y >= ty - 40; y--) {
+    if (getTile(rx, y) === T.LEAVES) {
+      setTile(rx, y, T.DEADPINE);   // 感染第一个树叶
+      return;
+    }
+    // 若该列已不是树冠（不再是树叶/树干），在树干左右找第一个树叶
+    if (getTile(rx, y) !== T.LEAVES && getTile(rx, y) !== T.DEADPINE) {
+      for (const off of [-1, 1]) {
+        if (getTile(rx + off, y) === T.LEAVES) {
+          setTile(rx + off, y, T.DEADPINE);
+          return;
+        }
+      }
+      break;
     }
   }
 }
