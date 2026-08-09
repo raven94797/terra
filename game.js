@@ -1948,13 +1948,12 @@ function updateProbioticPickup(dt) {
     if (p.taken) { p.respawn -= dt; if (p.respawn <= 0) { p.taken = false; p.respawn = 8; } continue; }
     if (!missionStarted) continue;
     const dx = p.x - player.cx, dy = p.y - (player.y + player.h * 0.4);
-    if (dx * dx + dy * dy < TILE * TILE * 1.2) {
-      if (proBiotic < MAX_PROBIOTIC) {
-        proBiotic++;
-        p.taken = true;
-        p.respawn = 10 + Math.random() * 8;
-        sfxPickup();
-      }
+    // 拾取距离放宽到 TILE*2（约 2 格），避免"碰到却不拾取"
+    if (dx * dx + dy * dy < TILE * TILE * 4) {
+      proBiotic = Math.min(MAX_PROBIOTIC, proBiotic + 1);   // 增加弹药（不超过上限）
+      p.taken = true;
+      p.respawn = 10 + Math.random() * 8;
+      sfxPickup();
     }
   }
 }
