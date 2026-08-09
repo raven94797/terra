@@ -732,7 +732,7 @@ function genWorld() {
     if (getTile(x, surfaceH[x]) !== T.GRASS) continue;
     if (Math.abs(surfaceH[x - 1] - surfaceH[x]) > 1 || Math.abs(surfaceH[x + 1] - surfaceH[x]) > 1) continue;
     if (noiseB.noise1(x * 0.1 + 9) < 0.56) continue;
-    generateWorldTree(x, surfaceH[x] - 1);   // sprite 拼装松树
+    growPineBlocks(x, surfaceH[x] - 1);      // 精细像素方块松树
     lastTree = x;
   }
 
@@ -758,6 +758,48 @@ function genWorld() {
       respawn: 8 + i * 0.5,
       phase: i * 1.3,
     });
+  }
+}
+
+// 精细像素方块松树：笔直树干 + 多层渐窄的针叶树冠（尖塔形），边缘带针叶突刺
+function growPineBlocks(tx, groundY) {
+  const rand = mulberry32(tx * 31 + 7);
+  // 树干
+  const trunk = 14 + ((rand() * 4) | 0);
+  for (let i = 0; i < trunk; i++) setTile(tx, groundY - i, T.WOOD);
+  // 树冠：从底部往上，每层渐窄
+  const crownBase = groundY - trunk;       // 树冠底部
+  let y = crownBase;
+  // 每层 [半径, 该半径保持的高度]：从下往上渐窄
+  const layers = [3, 3, 2, 2, 2, 1, 1];    // 每行半径
+  for (let li = 0; li < layers.length; li++) {
+    const r = layers[li];
+    // 该层：宽 r 的针叶行（中心一格）
+    for (let dx = -r; dx <= r; dx++) {
+      const x = tx + dx;
+      if (getTile(x, y) === T.AIR) setTile(x, y, T.LEAVES);
+    }
+    // 边缘针叶突刺（不规则，模拟松针垂坠）
+    if (li < layers.length - 1) {
+      if (rand() < 0.6 && getTile(tx - r - 1, y) === T.AIR) setTile(tx - r - 1, y, T.LEAVES);
+      if (rand() < 0.6 && getTile(tx + r + 1, y) === T.AIR) setTile(tx + r + 1, y, T.LEAVES);
+      if (rand() < 0.4 && getTile(tx - r, y + 1) === T.AIR) setTile(tx - r, y + 1, T.LEAVES);
+      if (rand() < 0.4 && getTile(tx + r, y + 1) === T.AIR) setTile(tx + r, y + 1, T.LEAVES);
+    }
+    y--;
+  }
+  // 树顶尖
+  setTile(tx, y, T.LEAVES);
+  setTile(tx, y - 1, T.LEAVES);
+
+  // 部分松树初始带枯黄松叶（线虫侵染表现）
+  if (rand() < 0.3) {
+    const count = 3 + ((rand() * 4) | 0);
+    for (let i = 0; i < count; i++) {
+      const ix = tx + Math.floor(rand() * 7) - 3;
+      const iy = crownBase - Math.floor(rand() * (layers.length + 2));
+      if (getTile(ix, iy) === T.LEAVES) setTile(ix, iy, T.DEADPINE);
+    }
   }
 }
 
@@ -1254,8 +1296,6 @@ function wormInfect(w) {
       }
     }
   }
-  // 让 sprite 松树树冠也变枯黄（线虫侵染视觉表现）
-  infectTreeAt(w.cx, w.cy);
 }
 
 function wormHit(w, dmg) {
@@ -1562,15 +1602,11 @@ function updateProbioticShots(dt) {
       bossHit(25);
       used = true;
     }
-    // 益生菌治愈：既恢复枯黄松叶方块，也治愈 sprite 松树树冠
+    // 益生菌治愈枯黄松叶：把命中位置的枯黄松叶(T.DEADPINE)恢复为健康松叶(T.LEAVES)
     if (!used) {
       const htx = Math.floor(s.x / TILE), hty = Math.floor(s.y / TILE);
-      let healed = cureTreeAt(s.x, s.y);   // 治愈 sprite 树冠（枯黄→健康）
       if (getTile(htx, hty) === T.DEADPINE) {
         setTile(htx, hty, T.LEAVES);
-        healed = true;
-      }
-      if (healed) {
         used = true;
         // 治愈粒子（绿色恢复光芒）
         for (let j = 0; j < 8; j++) {
@@ -2883,7 +2919,6 @@ function frame(dt, ts) {
   drawMountains();
   drawClouds(dt);
   drawTiles();
-  drawTrees();          // 松树 sprite 拼装层
   drawWorms();
   drawLongicorn();
   drawBossShots();
@@ -2953,7 +2988,6 @@ async function init() {
     sprites.mountains = removeWhiteBG(mImg);
 
     await new Promise(r => setTimeout(r, 30));
-    buildTreeSheets();      // 预绘制松树 sprite sheet（健康/枯黄）
     genWorld();
     initSky();
     buildHotbar();
