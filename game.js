@@ -591,50 +591,41 @@ function genWorld() {
   }
 }
 
-// 针叶松树：笔直树干 + 多层"托盘式"针叶树冠，逐层收窄成细长锥形，顶部尖细
-// （方块变小后松树更高更细，更精致）
+// 针叶松树：泰拉瑞亚风格——高大笔直树干 + 一整团饱满的圆形针叶树冠
 function growPine(tx, groundY) {
   const rand = mulberry32(tx * 31 + 7);
-  const trunk = 16 + ((rand() * 6) | 0);    // 树干更高（16~21格）
+  // 高大笔直的棕色树干
+  const trunk = 20 + ((rand() * 6) | 0);   // 树干 20~25 格（很挺拔）
   for (let i = 0; i < trunk; i++) setTile(tx, groundY - i, T.WOOD);
-  const baseY = groundY - trunk;            // 树冠底部
-  // 针叶层：从下往上 [半径, 层高]（更窄更尖的细长松冠）
-  const layers = [
-    { r: 4, hgt: 3 },
-    { r: 3, hgt: 3 },
-    { r: 3, hgt: 3 },
-    { r: 2, hgt: 3 },
-    { r: 2, hgt: 3 },
-    { r: 1, hgt: 3 },
-  ];
-  let y = baseY;
-  for (let li = 0; li < layers.length; li++) {
-    const L = layers[li];
-    const layBase = y + L.hgt - 1;          // 该层底部行
-    for (let dy = 0; dy < L.hgt; dy++) {
-      const ry = layBase - dy;              // 当前行（越往上越窄）
-      const shrink = dy === 0 ? 0 : 1;      // 每层向上缩 1 格
-      const r = Math.max(1, L.r - shrink);
-      for (let dx = -r; dx <= r; dx++) {
-        const x = tx + dx;
-        if (getTile(x, ry) === T.AIR) setTile(x, ry, T.LEAVES);
+  // 树冠：单一饱满的圆形/椭圆形（参考泰拉瑞亚松树）
+  const crownCenterY = groundY - trunk + 4;  // 树冠中心位置（树干上部）
+  const rx = 4 + ((rand() * 2) | 0);         // 树冠水平半径（4~5 格）
+  const ry = 3 + ((rand() * 2) | 0);         // 树冠垂直半径（3~4 格，略扁）
+  // 用椭圆距离公式填充树冠
+  for (let dy = -ry; dy <= ry; dy++) {
+    for (let dx = -rx; dx <= rx; dx++) {
+      // 椭圆距离（d<=1 为内部）；轻微噪声扰动让边缘不太规则
+      const d2 = (dx * dx) / (rx * rx) + (dy * dy) / (ry * ry);
+      if (d2 <= 1) {
+        const x = tx + dx, y = crownCenterY + dy;
+        if (getTile(x, y) === T.AIR) setTile(x, y, T.LEAVES);
       }
     }
-    y -= L.hgt;
   }
-  // 树顶尖（尖细锥头）
-  setTile(tx, y, T.LEAVES);
-  setTile(tx, y - 1, T.LEAVES);
-  setTile(tx + (rand() < 0.5 ? 1 : -1), y, T.LEAVES);
+  // 树冠顶部小尖（最上一格的中央）
+  setTile(tx, crownCenterY - ry - 1, T.LEAVES);
 
   // 部分松树一开始就已受线虫侵染：把树冠部分松叶变为枯黄(T.DEADPINE)
   if (rand() < 0.3) {
     const infectCount = 6 + ((rand() * 8) | 0);
     let placed = 0, guard = 0;
-    while (placed < infectCount && guard < 120) {
+    while (placed < infectCount && guard < 200) {
       guard++;
-      const ix = tx + Math.floor(rand() * 7) - 3;
-      const iy = baseY - Math.floor(rand() * 12);
+      // 在树冠椭圆范围内随机选点
+      const angle = rand() * Math.PI * 2;
+      const r = Math.sqrt(rand()) * 0.95;     // 椭圆内均匀分布
+      const ix = tx + Math.round(Math.cos(angle) * rx * r);
+      const iy = crownCenterY + Math.round(Math.sin(angle) * ry * r);
       if (getTile(ix, iy) === T.LEAVES) { setTile(ix, iy, T.DEADPINE); placed++; }
     }
   }
