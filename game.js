@@ -183,6 +183,23 @@ function loadImage(src) {
     }));
 }
 
+// 把多帧对齐到相同画布尺寸（以最大宽高为准，居中，透明填充），避免帧切换时抖动闪烁
+function alignFrames(frames) {
+  let maxW = 0, maxH = 0;
+  for (const f of frames) {
+    if (f.width > maxW) maxW = f.width;
+    if (f.height > maxH) maxH = f.height;
+  }
+  if (maxW === 0 || maxH === 0) return frames;
+  return frames.map(f => {
+    if (f.width === maxW && f.height === maxH) return f;
+    const c = document.createElement('canvas');
+    c.width = maxW; c.height = maxH;
+    c.getContext('2d').drawImage(f, (maxW - f.width) / 2, (maxH - f.height) / 2);
+    return c;
+  });
+}
+
 // 把大图缩小到不超过 maxW 宽（等比），降低抠图/处理开销，避免同步阻塞
 function downscaleImage(img, maxW = 520) {
   const w = img.width, h = img.height;
@@ -1934,10 +1951,11 @@ function drawWorms() {
 function drawLongicorn() {
   if (!longicorn) return;
   const b = longicorn;
-  // 飞行帧切换：两张图按 animT 高速交替，模拟翅膀上下扇动
+  // 飞行帧切换：两张图按 animT 交替，模拟翅膀上下扇动
+  // 使用较慢的频率（约 6Hz）避免频闪闪烁
   const frames = sprites.longicornFrames;
   const spr = frames
-    ? frames[Math.floor((b.animT * 18) % frames.length)]
+    ? frames[Math.floor((b.animT * 6) % frames.length)]
     : sprites.longicorn;
   const x = b.x - cam.x, y = b.y - cam.y;
   const w = b.w, h = b.h;
@@ -2693,8 +2711,10 @@ async function init() {
     // 天牛两张飞行帧（白底，removeWhiteBG 抠图），按 animT 切换产生翅膀扇动效果
     const frameA = removeWhiteBG(downscaleImage(bossImg, 420));
     const frameB = removeWhiteBG(downscaleImage(bossImg2, 420));
-    sprites.longicorn = frameA;                  // 兼容旧引用
-    sprites.longicornFrames = [frameA, frameB]; // 飞行帧序列
+    // 对齐两帧到相同画布尺寸，避免切换时人物抖动闪烁
+    const aligned = alignFrames([frameA, frameB]);
+    sprites.longicorn = aligned[0];             // 兼容旧引用
+    sprites.longicornFrames = aligned;          // 飞行帧序列
     setP(0.9, '生成松林…');
     sprites.mountains = removeWhiteBG(mImg);
 
