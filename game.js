@@ -54,14 +54,15 @@ const WORLD_W = 600, WORLD_H = 160;
 const SURFACE_Y = 42;
 const DAY_LENGTH = 240;
 
-const T = { AIR: 0, GRASS: 1, DIRT: 2, STONE: 3, WOOD: 4, LEAVES: 5, SAND: 6 };
+const T = { AIR: 0, GRASS: 1, DIRT: 2, STONE: 3, WOOD: 4, LEAVES: 5, SAND: 6, DEADPINE: 7 };
 const TILE_DEF = {
   [T.GRASS]:  { key: 'grass',  name: '草皮',   hard: 0.45, img: 'assets/tiles/grass.png',  cropTop: 0.10 },
   [T.DIRT]:   { key: 'dirt',   name: '泥土',   hard: 0.40, img: 'assets/tiles/dirt.png' },
   [T.STONE]:  { key: 'stone',  name: '岩石',   hard: 1.05, img: 'assets/tiles/stone.png' },
   [T.WOOD]:   { key: 'wood',   name: '松木',   hard: 0.70, img: 'assets/tiles/wood.png' },
-  [T.LEAVES]: { key: 'leaves', name: '松针',   hard: 0.18, img: 'assets/tiles/leaves.png' },
+  [T.LEAVES]: { key: 'leaves', name: '松叶',   hard: 0.18, img: 'assets/tiles/leaves.png' },
   [T.SAND]:   { key: 'sand',   name: '沙地',   hard: 0.40, img: 'assets/tiles/sand.png' },
+  [T.DEADPINE]: { key: 'deadpine', name: '枯黄松叶', hard: 0.12, img: 'assets/tiles/dead_pine.png' },
 };
 const HOTBAR_ORDER = [T.GRASS, T.DIRT, T.STONE, T.WOOD, T.LEAVES, T.SAND];
 
@@ -613,6 +614,19 @@ function growPine(tx, groundY) {
   setTile(tx, topY - 1, T.LEAVES);
   setTile(tx + (rand() < 0.5 ? 1 : -1), topY, T.LEAVES);
   setTile(tx, topY, T.LEAVES);
+
+  // 部分松树一开始就已受线虫侵染：把树冠部分松叶变为枯黄(T.DEADPINE)
+  // 呼应剧情"松林已被松树线虫病侵染"
+  if (rand() < 0.3) {
+    const infectCount = 4 + ((rand() * 5) | 0);
+    let placed = 0, guard = 0;
+    while (placed < infectCount && guard < 80) {
+      guard++;
+      const ix = tx + Math.floor(rand() * 5) - 2;
+      const iy = topY - Math.floor(rand() * 6) - 1;
+      if (getTile(ix, iy) === T.LEAVES) { setTile(ix, iy, T.DEADPINE); placed++; }
+    }
+  }
 }
 
 // ---------------- 音效 ----------------
@@ -1088,7 +1102,25 @@ function updateWorms(dt) {
     if (overlap(w, player) && invuln <= 0 && !dead) {
       hurtPlayer(14, dx > 0 ? 5 : -5);
     }
+    // 线虫侵染：把周围松叶逐渐变为枯黄松叶
+    if (Math.random() < dt * 0.8) wormInfect(w);
     if (w.y > WORLD_H * TILE + 100) WORMS.splice(i, 1);
+  }
+}
+
+// 线虫侵染松树：把附近的健康松叶(T.LEAVES)变为枯黄(T.DEADPINE)，枯死后掉落为空气
+function wormInfect(w) {
+  const cx = Math.floor(w.cx / TILE), cy = Math.floor(w.cy / TILE);
+  // 检查以线虫为中心的 5x5 区域
+  for (let dy = -2; dy <= 2; dy++) {
+    for (let dx = -2; dx <= 2; dx++) {
+      const tx = cx + dx, ty = cy + dy;
+      const v = getTile(tx, ty);
+      if (v === T.LEAVES) {
+        // 健康松叶 → 枯黄松叶
+        setTile(tx, ty, T.DEADPINE);
+      }
+    }
   }
 }
 
@@ -1395,6 +1427,28 @@ function updateProbioticShots(dt) {
     if (!used && bossActive && longicorn && s.x > longicorn.x - 6 && s.x < longicorn.x + longicorn.w + 6 && s.y > longicorn.y - 6 && s.y < longicorn.y + longicorn.h + 6) {
       bossHit(25);
       used = true;
+    }
+    // 益生菌治愈枯黄松叶：把命中位置的枯黄松叶(T.DEADPINE)恢复为健康松叶(T.LEAVES)
+    if (!used) {
+      const htx = Math.floor(s.x / TILE), hty = Math.floor(s.y / TILE);
+      if (getTile(htx, hty) === T.DEADPINE) {
+        setTile(htx, hty, T.LEAVES);
+        used = true;
+        // 治愈粒子（绿色恢复光芒）
+        for (let j = 0; j < 8; j++) {
+          particles.push({
+            x: s.x + (Math.random() - 0.5) * TILE,
+            y: s.y + (Math.random() - 0.5) * TILE,
+            vx: (Math.random() - 0.5) * 3,
+            vy: -Math.random() * 3 - 0.5,
+            life: 0.5 + Math.random() * 0.4,
+            t: 0,
+            color: Math.random() < 0.5 ? '#9ae66a' : '#d7ffb0',
+            size: 3 + Math.random() * 3,
+            spin: 0, rot: 0, rect: true,
+          });
+        }
+      }
     }
     if (used) {
       // 净化粒子
