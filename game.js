@@ -936,6 +936,7 @@ const REACH = 12 * TILE;  // 挖掘/放置可达距离（像素，随TILE缩放�
 const mining = { tx: -1, ty: -1, progress: 0 };
 let placeCooldown = 0;
 let remoteCooldown = 0;
+let meleeCd = 0;    // 近战击打线虫的冷却
 let summonCooldown = 0;
 
 function mouseTile() {
@@ -985,9 +986,25 @@ function toggleDrone() {
 function updateTools(dt) {
   placeCooldown -= dt;
   remoteCooldown -= dt;
-  const { tx, ty } = mouseTile();
+  meleeCd -= dt;
+  const { tx, ty, wx, wy } = mouseTile();
   const target = getTile(tx, ty);
   const canReach = inReach(tx, ty);
+
+  // 近战击打线虫：鼠标左键点击时，对鼠标指向附近的线虫造成低伤害并击飞
+  // （稿子/其他非遥控工具都可，伤害低）
+  if (mouse.left && meleeCd <= 0 && !dead) {
+    for (const w of WORMS) {
+      const dist = Math.hypot(w.cx - wx, w.cy - wy);
+      if (dist < TILE * 2.2) {
+        const kx = (w.cx - wx) || 1, ky = (w.cy - wy) - 2;
+        const len = Math.hypot(kx, ky) || 1;
+        wormKnock(w, 4, (kx / len) * 8, -6);  // 低伤害 + 击飞
+        meleeCd = 0.35;
+        break;
+      }
+    }
+  }
 
   if (selTool === TOOL_REMOTE) {
     // 遥控器：右键召唤/收起无人机
@@ -1222,6 +1239,7 @@ class Worm extends Entity {
     this.phase = Math.random() * 6.28;
     this.timer = 0.5 + Math.random();
     this.buried = false;
+    this.knockTimer = 0;   // 被击飞僵直计时
   }
 }
 
@@ -1263,6 +1281,15 @@ function updateWorms(dt) {
     w.flash = Math.max(0, w.flash - dt);
     w.phase += dt * 8;
     w.timer -= dt;
+    if (w.knockTimer > 0) {
+      // 被击飞僵直：不追击、不感染、不触碰伤害，且减少重力让它飞出更远
+      w.knockTimer -= dt;
+      w.timer = 0.6;
+      w.physics();
+      w.vy += 0.4;   // 减小下落速度，让击飞更明显
+      if (w.y > WORLD_H * TILE + 100) WORMS.splice(i, 1);
+      continue;
+    }
     const dx = player.cx - w.cx;
     // 朝玩家缓慢蠕动
     if (Math.abs(dx) > 4) w.dir = dx > 0 ? 1 : -1;
@@ -1274,27 +1301,62 @@ function updateWorms(dt) {
       w.timer = 1 + Math.random() * 1.5;
     }
     if (overlap(w, player) && invuln <= 0 && !dead) {
-      hurtPlayer(14, dx > 0 ? 5 : -5);
+      // 线虫碰一下掉半颗心（10 HP），无敌 0.5s（半秒内最多掉一次）
+      hurtPlayer(10, dx > 0 ? 5 : -5, 0.5);
     }
-    // 线虫侵染：把周围松叶逐渐变为枯黄松叶
+    // 线虫侵染：接近树木根部时感染该树树叶枯萎
     if (Math.random() < dt * 0.8) wormInfect(w);
     if (w.y > WORLD_H * TILE + 100) WORMS.splice(i, 1);
   }
 }
 
-// 线虫侵染松树：把附近的健康松叶(T.LEAVES)变为枯黄(T.DEADPINE)，枯死后掉落为空气
+// 线虫侵染松树：线虫接近树木根部（树干WOOD）时，感染该树的树叶使其枯萎
 function wormInfect(w) {
   const cx = Math.floor(w.cx / TILE), cy = Math.floor(w.cy / TILE);
-  // 检查以线虫为中心的 5x5 区域
+  // 检查以线虫为中心 5x5 范围内是否有树干（树根）
   for (let dy = -2; dy <= 2; dy++) {
     for (let dx = -2; dx <= 2; dx++) {
       const tx = cx + dx, ty = cy + dy;
-      const v = getTile(tx, ty);
-      if (v === T.LEAVES) {
-        // 健康松叶 → 枯黄松叶
-        setTile(tx, ty, T.DEADPINE);
+      if (getTile(tx, ty) === T.WOOD) {
+        // 找到树干：从根部向上遍历整棵树，把树冠松叶变枯黄
+        infectTreeFromRoot(tx, ty);
       }
     }
+  }
+}
+
+// 从树干某格开始，向上把该树的松叶全部变枯黄（感染树冠）
+function infectTreeFromRoot(rx, ry) {
+  // 先向下找到树的最底部根
+  let rootY = ry;
+  while (getTile(rx, rootY - 1) === T.WOOD) rootY--;
+  // 从根向上扫描整个树干范围，把其上的 LEAVES 变为 DEADPINE
+  for (let ty = rootY - 1; ty >= rootY - 40; ty--) {
+    // 该高度行附近的树叶（树干左右各 4 格）
+    for (let dx = -4; dx <= 4; dx++) {
+      const v = getTile(rx + dx, ty);
+      if (v === T.LEAVES) setTile(rx + dx, ty, T.DEADPINE);
+    }
+    // 若上面不再是树叶/树干（树冠结束）则停止
+    const above = getTile(rx, ty - 1);
+    if (above !== T.LEAVES && above !== T.DEADPINE && above !== T.WOOD && ty < ry) break;
+  }
+}
+
+// 近战击飞线虫：造成低伤害 + 施加击飞速度，并短暂"僵硬"（不攻击/不感染）
+function wormKnock(w, dmg, vx, vy) {
+  w.hp -= dmg;
+  w.flash = 0.12;
+  w.vx = vx;
+  w.vy = vy;
+  w.knockTimer = 0.35;   // 被击飞期间短暂僵直
+  w.dir = vx >= 0 ? 1 : -1;
+  if (w.hp <= 0) {
+    const i = WORMS.indexOf(w);
+    if (i >= 0) WORMS.splice(i, 1);
+    spawnWormParticles(w);
+    sfxPurify();
+    purified++;
   }
 }
 
@@ -1716,9 +1778,9 @@ function updateProbioticPickup(dt) {
 }
 
 // ---------------- 玩家受击 / 死亡 ----------------
-function hurtPlayer(dmg, kb) {
+function hurtPlayer(dmg, kb, invulnTime) {
   hp -= dmg;
-  invuln = 1.0;
+  invuln = invulnTime !== undefined ? invulnTime : 1.0; // 默认1s，可传自定义（线虫0.5s）
   shake = 0.5;
   player.vy = -7;
   player.vx = kb;
