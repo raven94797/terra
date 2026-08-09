@@ -200,6 +200,44 @@ function alignFrames(frames) {
   });
 }
 
+// 亮度归一化：统一所有帧的平均亮度到最高帧水平，消除帧切换时的明暗闪烁
+function normalizeBrightness(frames) {
+  if (!frames || frames.length < 2) return frames;
+  // 计算每帧不透明像素的平均亮度
+  const lumas = frames.map(f => {
+    const g = f.getContext('2d');
+    const id = g.getImageData(0, 0, f.width, f.height);
+    const d = id.data;
+    let sum = 0, count = 0;
+    for (let i = 0; i < f.width * f.height; i++) {
+      if (d[i * 4 + 3] < 30) continue;
+      sum += d[i * 4] + d[i * 4 + 1] + d[i * 4 + 2];
+      count++;
+    }
+    return count > 0 ? sum / count / 3 : 128; // 平均单通道亮度
+  });
+  // 目标亮度 = 最亮帧的平均亮度
+  const target = Math.max(...lumas);
+  if (target < 20) return frames;
+  // 对每个低于目标的帧，按比例线性缩放（乘以 ratio），并裁剪到 [0,255]
+  return frames.map((f, i) => {
+    const ratio = target / lumas[i];
+    if (ratio > 0.98 && ratio < 1.02) return f; // 差异很小，跳过
+    const w = f.width, h = f.height;
+    const g = f.getContext('2d');
+    const id = g.getImageData(0, 0, w, h);
+    const d = id.data;
+    for (let i = 0; i < w * h; i++) {
+      if (d[i * 4 + 3] < 30) continue;
+      d[i * 4]     = Math.min(255, d[i * 4]     * ratio);
+      d[i * 4 + 1] = Math.min(255, d[i * 4 + 1] * ratio);
+      d[i * 4 + 2] = Math.min(255, d[i * 4 + 2] * ratio);
+    }
+    g.putImageData(id, 0, 0);
+    return f;
+  });
+}
+
 // 把大图缩小到不超过 maxW 宽（等比），降低抠图/处理开销，避免同步阻塞
 function downscaleImage(img, maxW = 520) {
   const w = img.width, h = img.height;
@@ -2708,13 +2746,15 @@ async function init() {
     setP(0.72);
     sprites.guide = splitSpriteParts(removeWhiteBG(downscaleImage(gImg, 300)), 0.68, 0.50, 0.34);
     setP(0.82, '召唤天牛…');
-    // 天牛两张飞行帧（白底，removeWhiteBG 抠图），按 animT 切换产生翅膀扇动效果
-    const frameA = removeWhiteBG(downscaleImage(bossImg, 420));
-    const frameB = removeWhiteBG(downscaleImage(bossImg2, 420));
+    // 天牛两张飞行帧（已带透明背景，无需抠图），按 animT 切换产生翅膀扇动效果
+    const frameA = downscaleImage(bossImg, 420);
+    const frameB = downscaleImage(bossImg2, 420);
     // 对齐两帧到相同画布尺寸，避免切换时人物抖动闪烁
     const aligned = alignFrames([frameA, frameB]);
-    sprites.longicorn = aligned[0];             // 兼容旧引用
-    sprites.longicornFrames = aligned;          // 飞行帧序列
+    // 归一化两张图的亮度，使帧切换时明暗一致（消除忽明忽暗闪烁）
+    const normalized = normalizeBrightness(aligned);
+    sprites.longicorn = normalized[0];             // 兼容旧引用
+    sprites.longicornFrames = normalized;          // 飞行帧序列
     setP(0.9, '生成松林…');
     sprites.mountains = removeWhiteBG(mImg);
 
