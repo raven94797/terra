@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>松树 Sprite 部件拼装 · 演示</title>
+<style>
+  body { margin: 0; background: #1b2436; display: flex; flex-direction: column; align-items: center; font-family: "Microsoft YaHei", sans-serif; color: #cfe0ff; }
+  h1 { font-size: 18px; margin: 14px 0 4px; letter-spacing: 1px; }
+  .sub { font-size: 12px; color: #8aa0c0; margin-bottom: 10px; }
+  canvas { border: 2px solid #3a4a66; border-radius: 6px; background: #dfe8f2; }
+  .controls { margin: 10px 0; font-size: 13px; }
+  .controls button { margin: 0 4px; padding: 5px 12px; border: none; border-radius: 4px; background: #3a6ea5; color: #fff; cursor: pointer; font-size: 13px; }
+  .controls button:hover { background: #4d83b8; }
+  #sheetView { margin-top: 12px; font-size: 12px; color: #8aa0c0; text-align: center; }
+</style>
+</head>
+<body>
+  <h1>松树 Sprite 部件拼装 · 雪地生物群系</h1>
+  <div class="sub">离屏 sprite sheet 预绘制 → frameX/frameY 按需取区 → 缓存 trees[] 拼装（非每帧重画矩形）</div>
+  <canvas id="game" width="960" height="540"></canvas>
+  <div class="controls">
+    <button onclick="regenAll()">重新生成松林</button>
+    <span>当前形态各异松树：<b id="treeCount">0</b> 棵</span>
+  </div>
+  <div id="sheetView">Sprite Sheet：16×16 图格 · 帧索引 0~7（树干基部/中段/左枝/右枝/树冠宽/树冠中/树冠尖/噪点）</div>
+
+<script>
+'use strict';
+/* =========================================================
+ * 松树 sprite 部件拼装系统
+ * 1. 离屏绘制一张 sprite sheet（16×16 图格）
+ * 2. generateTree(x,y) 随机生成一棵树，写入各图格 frameX/frameY
+ * 3. trees[] 缓存所有图格，主循环按 frameX/frameY 取区 drawImage
+ * ========================================================= */
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const VW = canvas.width, VH = canvas.height;
+
+// ---- 图格尺寸与缩放 ----
+const TILE = 16;          // 每个图格 16×16
+const SCALE = 3;          // 整体放大 3 倍显示
+
+// ---- 雪地松树配色（暗绿尖塔，灰褐树干）----
+const COLORS = {
+  trunkDark: '#5a4a38',   // 树干暗边
+  trunkMid:  '#7a6a52',   // 树干主色
+  trunkLight:'#9a8868',   // 树干高光
+  rootDark:  '#4a3c2c',
+  crownDark: '#2f5e3a',   // 树冠深绿
+  crownMid:  '#3f7a4a',   // 树冠中绿
+  crownLight:'#5a9a5a',   // 树冠亮绿
+  crownTip:  '#6fae66',   // 树冠顶部最亮
+  snow:      '#f2f6fb',   // 积雪
+};
+
+// ---- 离屏 Sprite Sheet ----
+// frameX 索引 → 部件
+const FRAME = {
+  TRUNK_BASE: 0,   // 树干基部（带根部）
+  TRUNK_MID:  1,   // 树干中段（可竖直平铺）
+  BRANCH_L:   2,   // 左树枝
+  BRANCH_R:   3,   // 右树枝
+  CROWN_WIDE: 4,   // 树冠层（宽）
+  CROWN_MID:  5,   // 树冠层（中）
+  CROWN_TIP:  6,   // 树冠顶（尖塔）
+  LEAF_NOISE: 7,   // 树叶噪点碎片
+};
+const FRAME_COUNT = 8;
+const sheet = document.createElement('canvas');
+sheet.width = FRAME_COUNT * TILE;
+sheet.height = TILE;
+const sg = sheet.getContext('2d');
+sg.imageSmoothingEnabled = false;
+
+// ---- 绘制单个像素块 ----
+function px(x, y, color) {
+  sg.fillStyle = color;
+  sg.fillRect(x, y, 1, 1);
+}
+// 用整数点集描出轮廓
+function shapePoints(points, color) {
+  sg.fillStyle = color;
+  for (const [x, y] of points) sg.fillRect(x, y, 1, 1);
+}
+
+// 构建 sprite sheet（每个 16×16 图格）
+function buildSheet() {
+  // ---- frame 0：树干基部（带根部）----
+  // 粗壮的树桩 + 向左右展开的根部
+  const b0 = FRAME.TRUNK_BASE * TILE;
+  // 底部根
+  for (let r = 0; r < 3; r++) {
+    px(b0 + 2 + r, 14, COLORS.rootDark);
+    px(b0 + 12 - r, 14, COLORS.rootDark);
+    px(b0 + 1 + r, 15, COLORS.rootDark);
+    px(b0 + 13 - r, 15, COLORS.rootDark);
+  }
+  // 根部向两侧延伸
+  px(b0 + 1, 12, COLORS.rootDark); px(b0 + 1, 13, COLORS.rootDark);
+  px(b0 + 14, 12, COLORS.rootDark); px(b0 + 14, 13, COLORS.rootDark);
+  px(b0 + 0, 13, COLORS.rootDark); px(b0 + 15, 13, COLORS.rootDark);
+  // 树干主体（比中段略宽）
+  for (let y = 0; y < 13; y++) {
+    px(b0 + 5, y, COLORS.trunkDark);
+    px(b0 + 6, y, COLORS.trunkMid);
+    px(b0 + 7, y, COLORS.trunkMid);
+    px(b0 + 8, y, COLORS.trunkMid);
+    px(b0 + 9, y, COLORS.trunkLight);
+    px(b0 + 10, y, COLORS.trunkDark);
+  }
+  // 顶部过渡（连接中段）
+  px(b0 + 6, 12, COLORS.trunkMid); px(b0 + 7, 12, COLORS.trunkMid);
+  px(b0 + 8, 12, COLORS.trunkMid); px(b0 + 9, 12, COLORS.trunkMid);
+
+  // ---- frame 1：树干中段（可竖直平铺）----
+  const b1 = FRAME.TRUNK_MID * TILE;
+  for (let y = 0; y < TILE; y++) {
+    px(b1 + 5, y, COLORS.trunkDark);
+    px(b1 + 6, y, COLORS.trunkMid);
+    px(b1 + 7, y, COLORS.trunkMid);
+    px(b1 + 8, y, COLORS.trunkLight);
+    px(b1 + 9, y, COLORS.trunkMid);
+    px(b1 + 10, y, COLORS.trunkDark);
+  }
+  // 树皮纹理（横向小短纹）
+  for (let y = 3; y < TILE; y += 5) {
+    px(b1 + 6, y, COLORS.trunkDark);
+    px(b1 + 9, y + 2, COLORS.trunkDark);
+  }
+
+  // ---- frame 2：左树枝（朝左下伸出）----
+  const b2 = FRAME.BRANCH_L * TILE;
+  // 主干连接
+  for (let y = 6; y < 12; y++) { px(b2 + 7, y, COLORS.trunkMid); px(b2 + 8, y, COLORS.trunkMid); }
+  // 树枝朝左下
+  px(b2 + 6, 7, COLORS.trunkMid); px(b2 + 5, 8, COLORS.trunkMid);
+  px(b2 + 4, 9, COLORS.trunkMid); px(b2 + 3, 10, COLORS.trunkMid);
+  px(b2 + 2, 11, COLORS.trunkMid); px(b2 + 1, 11, COLORS.trunkMid);
+  // 树枝上的针叶
+  px(b2 + 0, 10, COLORS.crownMid); px(b2 + 1, 9, COLORS.crownMid);
+  px(b2 + 2, 10, COLORS.crownLight); px(b2 + 3, 11, COLORS.crownMid);
+  px(b2 + 4, 8, COLORS.crownMid); px(b2 + 3, 7, COLORS.crownLight);
+
+  // ---- frame 3：右树枝（朝右下伸出）----
+  const b3 = FRAME.BRANCH_R * TILE;
+  for (let y = 6; y < 12; y++) { px(b3 + 7, y, COLORS.trunkMid); px(b3 + 8, y, COLORS.trunkMid); }
+  px(b3 + 9, 7, COLORS.trunkMid); px(b3 + 10, 8, COLORS.trunkMid);
+  px(b3 + 11, 9, COLORS.trunkMid); px(b3 + 12, 10, COLORS.trunkMid);
+  px(b3 + 13, 11, COLORS.trunkMid); px(b3 + 14, 11, COLORS.trunkMid);
+  px(b3 + 15, 10, COLORS.crownMid); px(b3 + 14, 9, COLORS.crownMid);
+  px(b3 + 13, 10, COLORS.crownLight); px(b3 + 12, 11, COLORS.crownMid);
+  px(b3 + 11, 8, COLORS.crownMid); px(b3 + 12, 7, COLORS.crownLight);
+
+  // ---- frame 4：树冠层（宽，中间层）----
+  const b4 = FRAME.CROWN_WIDE * TILE;
+  // 雪松式宽塔层：底部宽，向上收窄
+  for (let y = 0; y < TILE; y++) {
+    const row = y;
+    const half = 2 + Math.floor(row * 0.6); // 越往下越宽
+    for (let dx = -half; dx <= half; dx++) {
+      const x = b4 + 8 + dx;
+      if (x < b4 || x >= b4 + TILE) continue;
+      // 配色：上层深、下层渐亮，制造体积感
+      const col = row < 5 ? COLORS.crownDark : (row < 11 ? COLORS.crownMid : COLORS.crownLight);
+      px(x, row, col);
+    }
+  }
+  // 底部积雪带
+  for (let dx = -2; dx <= 2; dx++) px(b4 + 8 + dx, 14, COLORS.snow);
+  px(b4 + 8 - 3, 14, COLORS.snow); px(b4 + 8 + 3, 14, COLORS.snow);
+
+  // ---- frame 5：树冠层（中，上层）----
+  const b5 = FRAME.CROWN_MID * TILE;
+  for (let y = 0; y < TILE; y++) {
+    const half = 1 + Math.floor(y * 0.55);
+    for (let dx = -half; dx <= half; dx++) {
+      const x = b5 + 8 + dx;
+      if (x < b5 || x >= b5 + TILE) continue;
+      const col = y < 5 ? COLORS.crownDark : (y < 11 ? COLORS.crownMid : COLORS.crownLight);
+      px(x, y, col);
+    }
+  }
+  px(b5 + 8 - 2, 14, COLORS.snow); px(b5 + 8 - 1, 14, COLORS.snow);
+  px(b5 + 8, 14, COLORS.snow); px(b5 + 8 + 1, 14, COLORS.snow); px(b5 + 8 + 2, 14, COLORS.snow);
+
+  // ---- frame 6：树冠顶（尖塔，最上层）----
+  const b6 = FRAME.CROWN_TIP * TILE;
+  for (let y = 0; y < TILE; y++) {
+    const half = Math.max(0, Math.floor((TILE - y) / 6)); // 顶部细
+    for (let dx = -half; dx <= half; dx++) {
+      const x = b6 + 8 + dx;
+      if (x < b6 || x >= b6 + TILE) continue;
+      const col = y < 6 ? COLORS.crownLight : COLORS.crownTip;
+      px(x, y, col);
+    }
+  }
+  // 顶尖 + 顶部积雪
+  px(b6 + 8, 0, COLORS.crownTip); px(b6 + 8, 1, COLORS.crownTip);
+  px(b6 + 8, 2, COLORS.crownTip);
+  px(b6 + 7, 2, COLORS.crownTip); px(b6 + 9, 2, COLORS.crownTip);
+
+  // ---- frame 7：树叶噪点碎片（可叠加的小针叶簇）----
+  const b7 = FRAME.LEAF_NOISE * TILE;
+  const noisePts = [
+    [4,3],[5,4],[6,3],[7,4],[8,3],[9,4],
+    [3,6],[4,7],[5,6],[6,7],[7,6],[8,7],[9,6],[10,7],[11,6],
+    [5,9],[6,10],[7,9],[8,10],[9,9],
+    [4,11],[5,12],[6,11],[7,12],[8,11],[9,12],[10,11],
+    [6,13],[7,14],[8,13],
+  ];
+  noisePts.forEach(([x, y]) => {
+    px(b7 + x, y, (x + y) % 3 === 0 ? COLORS.crownLight : COLORS.crownMid);
+  });
+  // 噪点边缘积雪
+  px(b7 + 5, 2, COLORS.snow); px(b7 + 8, 2, COLORS.snow);
+}
+
+// ---- 世界与树木数据 ----
+// 图格坐标 → frameX/frameY（每棵树是一个横向/纵向的部件集合）
+const trees = [];   // 每棵树: { baseX, baseY, parts: [{x,y,fx,fy}] }
+
+// 从 sheet 取一帧 canvas（缓存）
+function getFrame(fx, fy) {
+  const c = document.createElement('canvas');
+  c.width = TILE; c.height = TILE;
+  c.getContext('2d').drawImage(sheet, fx * TILE, fy * TILE, TILE, TILE, 0, 0, TILE, TILE);
+  return c;
+}
+const frameCache = {};
+function frameCanvas(fx, fy) {
+  const key = fx + '_' + fy;
+  if (!frameCache[key]) frameCache[key] = getFrame(fx, fy);
+  return frameCache[key];
+}
+
+// ---- generateTree(x, y) ----
+// x, y：树的地面图格坐标（y 为地面那一格）
+function generateTree(gx, gy) {
+  const rand = mulberry32(gx * 99991 + gy * 31 + Math.floor(Math.random() * 100000));
+  const tree = { baseX: gx, baseY: gy, parts: [] };
+  const push = (x, y, fx, fy) => tree.parts.push({ x, y, fx, fy });
+
+  // a. 随机树高 4~9 格
+  const trunkH = 4 + Math.floor(rand() * 6);
+  // 树干基部（1 格，带根）
+  push(gx, gy, FRAME.TRUNK_BASE, 0);
+  // 树干中段：从基部往上逐格放置
+  for (let i = 1; i <= trunkH; i++) {
+    push(gx, gy - i, FRAME.TRUNK_MID, 0);
+  }
+  // c. 按 ~10% 概率在左右生成树枝（在树干中段高度随机）
+  const branchY = gy - 2 - Math.floor(rand() * (trunkH - 1));
+  if (rand() < 0.55) push(gx - 1, branchY, FRAME.BRANCH_L, 0);
+  if (rand() < 0.55) push(gx + 1, branchY, FRAME.BRANCH_R, 0);
+  if (rand() < 0.2)  push(gx - 1, branchY - 1, FRAME.LEAF_NOISE, 0);
+  if (rand() < 0.2)  push(gx + 1, branchY - 1, FRAME.LEAF_NOISE, 0);
+
+  // d. 树冠：2~3 层尖塔（宽→中→尖）
+  const crownTop = gy - trunkH - 1;   // 树冠底部
+  const crownLayers = 2 + Math.floor(rand() * 2); // 2 或 3 层
+  // 先放宽层，再中，最后尖塔；每层向上叠一格
+  let cy = crownTop;
+  // 树冠层数：3 层 = 宽+中+尖；2 层 = 中+尖（或 宽+尖）
+  if (crownLayers === 3) {
+    push(gx, cy, FRAME.CROWN_WIDE, 0); cy--;
+    push(gx, cy, FRAME.CROWN_MID, 0);  cy--;
+    push(gx, cy, FRAME.CROWN_TIP, 0);
+  } else {
+    // 2 层：中 + 尖
+    push(gx, cy, FRAME.CROWN_MID, 0); cy--;
+    push(gx, cy, FRAME.CROWN_TIP, 0);
+  }
+  // 噪点点缀在树冠两侧
+  if (rand() < 0.4) push(gx - 1, crownTop, FRAME.LEAF_NOISE, 0);
+  if (rand() < 0.4) push(gx + 1, crownTop, FRAME.LEAF_NOISE, 0);
+  if (rand() < 0.3) push(gx, cy - 1, FRAME.LEAF_NOISE, 0);
+
+  return tree;
+}
+
+// mulberry32 确定性随机
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// ---- 生成一片松林（至少 5 棵）----
+function genForest() {
+  trees.length = 0;
+  // 5~9 棵，随机位置铺开，避免重叠
+  const count = 5 + Math.floor(Math.random() * 4);
+  let attempts = 0;
+  while (trees.length < count && attempts < 200) {
+    attempts++;
+    // 雪地地面基准线（画面中部偏下），带随机起伏
+    const groundY = Math.floor(VH / TILE / SCALE * 0.72);
+    const gx = 2 + Math.floor(Math.random() * (VW / TILE / SCALE - 4));
+    const gy = groundY + (Math.floor(Math.random() * 3) - 1);
+    // 检查与已有树重叠
+    let overlap = false;
+    for (const t of trees) {
+      if (Math.abs(t.baseX - gx) < 4) { overlap = true; break; }
+    }
+    if (overlap) continue;
+    trees.push(generateTree(gx, gy));
+  }
+  document.getElementById('treeCount').textContent = trees.length;
+}
+
+function regenAll() { genForest(); }
+
+// ---- 渲染 ----
+function drawSnowGround() {
+  // 天空
+  const sky = ctx.createLinearGradient(0, 0, 0, VH);
+  sky.addColorStop(0, '#a8c8e8');
+  sky.addColorStop(0.7, '#dfe8f2');
+  sky.addColorStop(1, '#f2f6fb');
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, VW, VH);
+  // 远处雪丘
+  ctx.fillStyle = '#e8eef7';
+  for (let i = 0; i < 4; i++) {
+    ctx.beginPath();
+    ctx.ellipse((i * 320 + 90) % VW, VH * 0.68, 220, 60, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // 雪地
+  ctx.fillStyle = '#eef4fb';
+  ctx.fillRect(0, VH * 0.66, VW, VH * 0.34);
+  // 雪地高光
+  ctx.fillStyle = '#ffffff';
+  for (let i = 0; i < 30; i++) {
+    const sx = (i * 67 + 31) % VW;
+    const sy = VH * 0.68 + (i * 13) % (VH * 0.28);
+    ctx.beginPath();
+    ctx.arc(sx, sy, 2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // 地表基准线
+  ctx.strokeStyle = '#d8e2f0';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(0, VH * 0.66); ctx.lineTo(VW, VH * 0.66);
+  ctx.stroke();
+}
+
+function draw() {
+  drawSnowGround();
+  // 主循环：遍历 trees，按 frameX/frameY 从 sheet 取区绘制
+  for (const tree of trees) {
+    for (const p of tree.parts) {
+      const f = frameCanvas(p.fx, p.fy);
+      const dx = p.x * TILE * SCALE;
+      const dy = p.y * TILE * SCALE;
+      ctx.drawImage(f, dx, dy, TILE * SCALE, TILE * SCALE);
+    }
+  }
+}
+
+// ---- 初始化 ----
+buildSheet();
+genForest();
+draw();
+
+// 让 sheet 可视化（调试用，叠加在右上角小图）
+(function showSheet() {
+  const view = document.createElement('canvas');
+  view.width = FRAME_COUNT * 16; view.height = 16;
+  view.getContext('2d').drawImage(sheet, 0, 0);
+  const holder = document.createElement('div');
+  holder.style.margin = '10px 0';
+  holder.style.imageRendering = 'pixelated';
+  const label = document.createElement('div');
+  label.style.fontSize = '12px'; label.style.color = '#8aa0c0'; label.style.marginBottom = '4px';
+  label.textContent = '生成效果';
+  holder.appendChild(label);
+  holder.appendChild(view);
+  document.querySelector('.controls').after(holder);
+})();
+</script>
+</body>
+</html>
