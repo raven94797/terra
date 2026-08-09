@@ -1934,7 +1934,11 @@ function drawWorms() {
 function drawLongicorn() {
   if (!longicorn) return;
   const b = longicorn;
-  const spr = sprites.longicorn;
+  // 飞行帧切换：两张图按 animT 高速交替，模拟翅膀上下扇动
+  const frames = sprites.longicornFrames;
+  const spr = frames
+    ? frames[Math.floor((b.animT * 18) % frames.length)]
+    : sprites.longicorn;
   const x = b.x - cam.x, y = b.y - cam.y;
   const w = b.w, h = b.h;
   const flash = b.flash > 0;
@@ -2671,13 +2675,14 @@ async function init() {
     tileTypes.forEach((t, i) => { tex[t] = makeTile(downscaleImage(tileImgs[i], 128), TILE_DEF[t].cropTop || 0); });
     setP(0.4, '处理角色素材…');
 
-    const [pImg, gImg, pWalkImg, gWalkImg, mImg, bossImg] = await Promise.all([
+    const [pImg, gImg, pWalkImg, gWalkImg, mImg, bossImg, bossImg2] = await Promise.all([
       loadImage('assets/sprites/player.png'),
       loadImage('assets/sprites/guide.png'),
       loadImage('assets/sprites/player_walk.png'),
       loadImage('assets/sprites/guide_walk.png'),
       loadImage('assets/bg/mountains.png'),
       loadImage('assets/boss/longicorn.png'),
+      loadImage('assets/boss/longicorn-1.png'),
     ]);
     setP(0.6, '处理角色动画…');
     // 先缩小大图再抠图，避免同步处理 1536×1024 等大图导致主线程卡死
@@ -2685,7 +2690,11 @@ async function init() {
     setP(0.72);
     sprites.guide = splitSpriteParts(removeWhiteBG(downscaleImage(gImg, 300)), 0.68, 0.50, 0.34);
     setP(0.82, '召唤天牛…');
-    sprites.longicorn = removeBossBG(downscaleImage(bossImg, 420));
+    // 天牛两张飞行帧（白底，removeWhiteBG 抠图），按 animT 切换产生翅膀扇动效果
+    const frameA = removeWhiteBG(downscaleImage(bossImg, 420));
+    const frameB = removeWhiteBG(downscaleImage(bossImg2, 420));
+    sprites.longicorn = frameA;                  // 兼容旧引用
+    sprites.longicornFrames = [frameA, frameB]; // 飞行帧序列
     setP(0.9, '生成松林…');
     sprites.mountains = removeWhiteBG(mImg);
 
