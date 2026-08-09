@@ -1816,7 +1816,7 @@ function updateGuardDrone(dt) {
       vx: (dx / len) * 9, vy: (dy / len) * 9,
       life: 1.2,
     });
-    g.cd = 0.45;
+    g.cd = 1.35;   // 攻击间隔为原0.45的3倍
     sfxDrone();
     if (Math.random() < 0.4) sfxProbiotic();
   }
@@ -2370,8 +2370,8 @@ function drawLongicorn() {
   ctx.translate(x + w / 2, y + h / 2 + hover);
   ctx.scale(face, 1);
 
-  // ---- 狂暴光晕 ----
-  if (b.enraged && !flash) {
+  // ---- 狂暴光晕（去除红色，保留狂暴其他效果） ----
+  if (false && b.enraged && !flash) {
     const auraPulse = 0.6 + 0.4 * Math.sin(b.animT * 8);
     ctx.save();
     ctx.globalAlpha = 0.5 * auraPulse;
@@ -2385,29 +2385,11 @@ function drawLongicorn() {
   }
 
   if (spr) {
-    // ---- 绘制图片天牛 ----
-    if (flash) {
-      // 受击闪白：白色叠加
-      ctx.save();
-      ctx.globalAlpha = 0.85;
-      ctx.drawImage(spr, -dw / 2, -dh / 2, dw, dh);
-      ctx.globalCompositeOperation = 'source-atop';
-      ctx.fillStyle = '#fff';
-      ctx.fillRect(-dw / 2, -dh / 2, dw, dh);
-      ctx.restore();
-    } else if (b.enraged) {
-      // 狂暴红色调
-      ctx.save();
-      ctx.drawImage(spr, -dw / 2, -dh / 2, dw, dh);
-      ctx.globalCompositeOperation = 'multiply';
-      ctx.fillStyle = '#ff6a3a';
-      ctx.globalAlpha = 0.4;
-      ctx.fillRect(-dw / 2, -dh / 2, dw, dh);
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.restore();
-    } else {
-      ctx.drawImage(spr, -dw / 2, -dh / 2, dw, dh);
-    }
+    // 受击反馈：用透明度快速闪烁替代白色矩形（不产生白色块）
+    ctx.save();
+    if (flash) ctx.globalAlpha = (Math.floor(b.animT * 30) % 2 === 0) ? 0.35 : 1.0;
+    ctx.drawImage(spr, -dw / 2, -dh / 2, dw, dh);
+    ctx.restore();
   }
   ctx.restore();
 
