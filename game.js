@@ -1424,8 +1424,8 @@ class Longicorn extends Entity {
     this.attackTimer = 2.5;
     this.dashTimer = 0;
     this.dashVX = 0;
-    this.speed = 2.4;
-    this.baseSpeed = 2.4;
+    this.speed = 5.2;      // 比玩家(P_SPEED=4.4)更快，更具压迫感
+    this.baseSpeed = 5.2;
     this.dir = Math.random() < 0.5 ? -1 : 1;
     this.animT = 0;
     this.enraged = false;
@@ -1474,10 +1474,10 @@ function updateBoss(dt) {
   const dy = player.cy - b.cy;
   const dist = Math.hypot(dx, dy) || 1;
 
-  // 半血狂暴
+  // 半血狂暴：速度进一步提升
   if (!b.enraged && b.hp <= b.maxHp / 2) {
     b.enraged = true;
-    b.baseSpeed = 3.2;
+    b.baseSpeed = 6.6;
     sfxBoss();
   }
   b.speed = b.baseSpeed;
@@ -1518,14 +1518,18 @@ function updateBoss(dt) {
       break;
     }
     case 'dash': {
-      // 冲锋：锁定方向快速冲刺
+      // 冲锋：锁定方向快速冲刺，无视地形（穿过方块）
       if (b.dashTimer > 0) {
         b.dashTimer -= dt;
-        b.vx = lerp(b.vx, b.pendingDash.vx, 0.25);
-        b.vy = lerp(b.vy, b.pendingDash.vy, 0.25);
+        b.vx = lerp(b.vx, b.pendingDash.vx, 0.5);
+        b.vy = lerp(b.vy, b.pendingDash.vy, 0.5);
+        // 冲撞伤害：冲锋中触碰玩家造成更高伤害
+        if (overlap(b, player) && invuln <= 0 && !dead) {
+          hurtPlayer(26, dx > 0 ? 9 : -9, 0.6);
+        }
       } else {
-        b.vx = lerp(b.vx, 0, 0.1);
-        b.vy = lerp(b.vy, 0, 0.1);
+        b.vx = lerp(b.vx, 0, 0.12);
+        b.vy = lerp(b.vy, 0, 0.12);
       }
       break;
     }
@@ -1550,9 +1554,20 @@ function updateBoss(dt) {
     }
   }
 
-  b.physics();
+  if (b.mode === 'dash' && b.dashTimer > 0) {
+    // 冲撞：无视地形，直接位移穿过方块（不调用 physics 碰撞）
+    b.x += b.vx;
+    b.y += b.vy;
+    // 保持在世界范围内
+    b.x = clamp(b.x, 0, WORLD_W * TILE - b.w);
+    b.y = clamp(b.y, -TILE * 40, WORLD_H * TILE - b.h);
+    b.onGround = false;
+  } else {
+    // 追袭/弹幕：正常物理（受地形碰撞）
+    b.physics();
+  }
 
-  // ---- 天牛撞击摧毁方块 ----
+  // ---- 天牛撞击摧毁方块（冲撞时碾碎途经方块） ----
   bossSmashBlocks(b);
 
   // 毒素弹
