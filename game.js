@@ -238,16 +238,17 @@ function normalizeBrightness(frames) {
   });
 }
 
-// 把大图缩小到不超过 maxW 宽（等比），降低抠图/处理开销，避免同步阻塞
+// 把大图缩小到不超过 maxW 宽（等比），降低抠图/处理开销，避免同步阻塞。
+// 始终返回 canvas（即使无需缩小也拷贝一份），保证调用方可安全 getContext/getImageData
 function downscaleImage(img, maxW = 520) {
   const w = img.width, h = img.height;
-  if (w <= maxW) return img;
-  const ratio = maxW / w;
+  const ratio = Math.min(1, maxW / w);
   const nw = Math.round(w * ratio), nh = Math.round(h * ratio);
   const c = document.createElement('canvas');
   c.width = nw; c.height = nh;
-  c.getContext('2d').imageSmoothingEnabled = true;
-  c.getContext('2d').drawImage(img, 0, 0, nw, nh);
+  const g = c.getContext('2d');
+  g.imageSmoothingEnabled = true;
+  g.drawImage(img, 0, 0, nw, nh);
   return c;
 }
 
