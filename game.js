@@ -49,9 +49,9 @@ const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
 const lerp = (a, b, t) => a + (b - a) * t;
 
 // ---------------- 配置 ----------------
-const TILE = 40;
-const WORLD_W = 600, WORLD_H = 160;
-const SURFACE_Y = 42;
+const TILE = 20;   // 方块尺寸（原40拆4，每块20）
+const WORLD_W = 1200, WORLD_H = 320;  // 世界方块数翻倍，保持像素范围
+const SURFACE_Y = 84;
 const DAY_LENGTH = 240;
 
 const T = { AIR: 0, GRASS: 1, DIRT: 2, STONE: 3, WOOD: 4, LEAVES: 5, SAND: 6, DEADPINE: 7 };
@@ -528,15 +528,15 @@ function genWorld() {
   noiseB = makeNoise(8866);
 
   for (let x = 0; x < WORLD_W; x++) {
-    const base = noise.noise1(x * 0.008) * 14;
-    const hills = noise.noise1(x * 0.035 + 100) * 7;
-    const detail = noise.noise1(x * 0.13 + 300) * 2;
+    const base = noise.noise1(x * 0.004) * 14;
+    const hills = noise.noise1(x * 0.017 + 100) * 7;
+    const detail = noise.noise1(x * 0.06 + 300) * 2;
     surfaceH[x] = Math.round(SURFACE_Y + base + hills + detail - 10);
   }
 
   for (let x = 0; x < WORLD_W; x++) {
-    const desert = noiseB.noise1(x * 0.006 + 50) > 0.62;
-    const dirtDepth = 4 + ((noise.noise1(x * 0.09 + 77) * 3) | 0);
+    const desert = noiseB.noise1(x * 0.003 + 50) > 0.62;
+    const dirtDepth = 4 + ((noise.noise1(x * 0.045 + 77) * 3) | 0);
     for (let y = surfaceH[x]; y < WORLD_H; y++) {
       const depth = y - surfaceH[x];
       if (depth === 0) setTile(x, y, desert ? T.SAND : T.GRASS);
@@ -545,28 +545,29 @@ function genWorld() {
     }
   }
 
+  // 洞穴：方块变小后，洞穴半径也相应缩放（噪声频率减半，保持洞穴尺寸）
   for (let x = 2; x < WORLD_W - 2; x++) {
     for (let y = surfaceH[x] + 6; y < WORLD_H - 4; y++) {
-      const n = noise.noise2(x * 0.075, y * 0.075);
-      const n2 = noiseB.noise2(x * 0.05 + 40, y * 0.05);
+      const n = noise.noise2(x * 0.037, y * 0.037);
+      const n2 = noiseB.noise2(x * 0.025 + 40, y * 0.025);
       if (n > 0.74 || (n2 > 0.78 && n > 0.62)) setTile(x, y, T.AIR);
     }
   }
 
   const spawnTX = WORLD_W >> 1;
-  let lastTree = -10;
-  for (let x = 8; x < WORLD_W - 8; x++) {
-    if (Math.abs(x - spawnTX) < 10) continue;
-    if (x - lastTree < 7) continue;
+  let lastTree = -20;
+  for (let x = 16; x < WORLD_W - 16; x++) {
+    if (Math.abs(x - spawnTX) < 20) continue;
+    if (x - lastTree < 14) continue;
     if (getTile(x, surfaceH[x]) !== T.GRASS) continue;
     if (Math.abs(surfaceH[x - 1] - surfaceH[x]) > 1 || Math.abs(surfaceH[x + 1] - surfaceH[x]) > 1) continue;
-    if (noiseB.noise1(x * 0.21 + 9) < 0.56) continue;
+    if (noiseB.noise1(x * 0.1 + 9) < 0.56) continue;
     growPine(x, surfaceH[x] - 1);
     lastTree = x;
   }
 
   const target = surfaceH[spawnTX];
-  for (let x = spawnTX - 5; x <= spawnTX + 5; x++) {
+  for (let x = spawnTX - 10; x <= spawnTX + 10; x++) {
     if (surfaceH[x] > target) {
       for (let y = target; y < surfaceH[x]; y++) setTile(x, y, T.AIR);
       surfaceH[x] = target;
@@ -590,18 +591,21 @@ function genWorld() {
   }
 }
 
-// 针叶松树：笔直树干 + 3~4 层"托盘式"针叶树冠，逐层收窄成锥形，顶部尖细
+// 针叶松树：笔直树干 + 多层"托盘式"针叶树冠，逐层收窄成细长锥形，顶部尖细
+// （方块变小后松树更高更细，更精致）
 function growPine(tx, groundY) {
   const rand = mulberry32(tx * 31 + 7);
-  const trunk = 10 + ((rand() * 4) | 0);    // 树干更高
+  const trunk = 16 + ((rand() * 6) | 0);    // 树干更高（16~21格）
   for (let i = 0; i < trunk; i++) setTile(tx, groundY - i, T.WOOD);
   const baseY = groundY - trunk;            // 树冠底部
-  // 针叶层参数：从下往上 [半径, 层高]（托盘式：下缘平、上缘收窄）
+  // 针叶层：从下往上 [半径, 层高]（更窄更尖的细长松冠）
   const layers = [
-    { r: 3, hgt: 2 },
-    { r: 2, hgt: 2 },
-    { r: 2, hgt: 2 },
-    { r: 1, hgt: 2 },
+    { r: 4, hgt: 3 },
+    { r: 3, hgt: 3 },
+    { r: 3, hgt: 3 },
+    { r: 2, hgt: 3 },
+    { r: 2, hgt: 3 },
+    { r: 1, hgt: 3 },
   ];
   let y = baseY;
   for (let li = 0; li < layers.length; li++) {
@@ -625,12 +629,12 @@ function growPine(tx, groundY) {
 
   // 部分松树一开始就已受线虫侵染：把树冠部分松叶变为枯黄(T.DEADPINE)
   if (rand() < 0.3) {
-    const infectCount = 4 + ((rand() * 5) | 0);
+    const infectCount = 6 + ((rand() * 8) | 0);
     let placed = 0, guard = 0;
-    while (placed < infectCount && guard < 80) {
+    while (placed < infectCount && guard < 120) {
       guard++;
-      const ix = tx + Math.floor(rand() * 5) - 2;
-      const iy = baseY - Math.floor(rand() * 6);
+      const ix = tx + Math.floor(rand() * 7) - 3;
+      const iy = baseY - Math.floor(rand() * 12);
       if (getTile(ix, iy) === T.LEAVES) { setTile(ix, iy, T.DEADPINE); placed++; }
     }
   }
@@ -765,7 +769,7 @@ window.addEventListener('mouseup', e => {
 window.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
 
 // ---------------- 挖掘 / 放置 / 工具使用 ----------------
-const REACH = 8 * TILE;   // 挖掘/放置可达距离（更宽松）
+const REACH = 12 * TILE;  // 挖掘/放置可达距离（像素，随TILE缩放但保证一定距离）
 const mining = { tx: -1, ty: -1, progress: 0 };
 let placeCooldown = 0;
 let remoteCooldown = 0;
