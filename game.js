@@ -2737,8 +2737,8 @@ async function init() {
       loadImage('assets/sprites/player_walk.png'),
       loadImage('assets/sprites/guide_walk.png'),
       loadImage('assets/bg/mountains.png'),
-      loadImage('assets/boss/longicorn.png'),
-      loadImage('assets/boss/longicorn-1.png'),
+      loadImage('assets/boss/kappframework-Gtagcl(1)(1).png'),
+      loadImage('assets/boss/kappframework-nUASgH(1)(1).png'),
     ]);
     setP(0.6, '处理角色动画…');
     // 先缩小大图再抠图，避免同步处理 1536×1024 等大图导致主线程卡死
