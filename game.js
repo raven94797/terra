@@ -308,30 +308,68 @@ let dialogLine = 0;          // 当前对话索引
 let dialogCooldown = 0;      // 防止按住E连点
 let talkHint = 0;            // 提示"按E交谈"闪烁计时
 let dialogTypewriter = 0;    // 打字机效果进度
+let storyStage = 0;          // 故事进度：0开场/1任务/2Boss/3胜利
+let introShown = false;      // 开场旁白是否已显示
+let outroShown = false;      // 结局旁白是否已显示
+let storyTimer = 0;          // 旁白显示计时
+let storyLines = [];         // 当前旁白行
+let storyLineIdx = 0;        // 当前旁白行索引
+
+// 开场旁白（游戏开始时的背景叙述）
+const INTRO_STORY = [
+  '……很久以前，这片松林曾是山林间最翠绿的地方。',
+  '然而不知从何时起，一股看不见的病菌悄然蔓延。',
+  '线虫钻入松树的心脉，啃食它们最后的生机；',
+  '而天牛，则是散播这场瘟疫的帮凶。',
+  '你，是最后一个愿意挺身而出的守卫者。',
+  '循着守林人的呼唤，你踏入了这片逐渐枯黄的山林……',
+];
+
+// 结局旁白（击败天牛后的收尾）
+const OUTRO_STORY = [
+  '随着松墨天牛轰然倒下，瘟疫的源头终于被斩断。',
+  '阳光重新洒进松林，枯黄的针叶一点点恢复了翠绿。',
+  '守林人望着你，眼中满是欣慰与感激。',
+  '你守护的不只是这片树林，更是这片土地上所有的生灵。',
+  '你回头望向林海，松涛阵阵，仿佛在向你道别。',
+  '……然而远方的地平线上，似乎又有什么在蠢蠢欲动。',
+  '但那，是另一个故事了。',
+];
+
+// 守林人对话：按故事阶段展开的完整剧情
 const DIALOG = {
-  intro: [                    // 初始（未领取遥控器）
-    '呼……终于找到你了。我是这片松林的守林人。',
-    '你手里的稿子可派上用场——挖开泥土岩石，收集方块备用。',
-    '等等，我把这个遥控器和一点益生菌交给你。',
-    '靠近我就能领取。拿遥控器时按右键，就能召唤无人机了。',
+  intro: [                    // 开场（stage 0，未接任务）
+    '呼……你终于来了。我是这片松林的守林人。',
+    '你看，四周的松树正在枯黄——那是松树线虫病在作祟。',
+    '线虫钻入树心啃食，还有天牛在帮着传播它们。',
+    '再这样下去，整片山林都要完了。',
+    '我把稿子和召唤器交给你，还给你备了点益生菌。',
+    '靠近我领取装备，拿遥控器按右键就能召唤无人机。',
+    '守住这片林子，就全靠你了。',
   ],
-  ready: [                    // 已领取遥控器，正在净化线虫
-    '很好！你拿到遥控器和益生菌了。',
-    '我身边的这架守卫无人机会自动帮你清除线虫。',
+  ready: [                    // 任务中（stage 1，净化线虫）
+    '干得好，你已经拿到了遥控器和益生菌。',
+    '我身边的守卫无人机会自动帮你清理线虫。',
     '你也能用遥控器召唤自己的无人机，左键喷洒益生菌。',
-    '天牛可不好对付——它会冲锋、发射孢子弹，还会释放线虫！',
+    '记得收集地面的绿色菌落，那是益生菌的能量来源。',
+    '等净化足够多的线虫，幕后主使——松墨天牛，就该现身了。',
+    '它移动极快，还会冲撞。到时候千万小心！',
   ],
-  boss: [                     // 天牛出现
+  boss: [                     // Boss战（stage 2）
     '小心！那就是传播线虫的松墨天牛！',
-    '它会朝你冲锋、吐出孢子弹，还会不断释放小线虫！',
-    '保持遥控器在手，无人机持续发射益生菌命中它的身体！',
-    '半血之后它会进入狂暴，弹幕更密，务必走位躲开！',
+    '它移动比你快，会突然朝你冲撞，还能穿过障碍！',
+    '它会吐出孢子弹，还会不断释放小线虫。',
+    '保持遥控器在手，用益生菌持续命中它的身体！',
+    '半血之后它会狂暴，弹幕更密，务必走位躲开！',
+    '为了这片松林，一定要击败它！',
   ],
-  victory: [                  // 胜利后
-    '太好了……松林终于得救了！',
-    '你不仅消灭了线虫，还击败了松墨天牛。',
-    '这片林子会慢慢恢复生机。谢谢你，守卫者。',
-    '不过也许……远处还有别的威胁。保持警惕。',
+  victory: [                  // 胜利后（stage 3）
+    '……松林，得救了。',
+    '你不仅清除了线虫，还击败了传播瘟疫的松墨天牛。',
+    '我守了这片林子大半辈子，从没见过这样的勇气。',
+    '这片山林会慢慢恢复生机，谢谢你，守卫者。',
+    '不过，我总觉得事情没那么简单。',
+    '……远处的地平线上，似乎还有什么在等着你。',
   ],
 };
 
@@ -1135,6 +1173,7 @@ function updateGuide(dt) {
     // 靠近守林人：交付遥控器与初始益生菌，开始任务
     if (!missionStarted && distP >= -TILE * 2) {
       missionStarted = true;
+      storyStage = 1;   // 进入任务阶段
       remoteGiven = true;
       if (!ownedTools.includes(TOOL_REMOTE)) ownedTools.push(TOOL_REMOTE);
       if (proBiotic < MAX_PROBIOTIC) proBiotic = Math.max(proBiotic, 3); // 初始益生菌
@@ -1173,9 +1212,9 @@ function updateGuide(dt) {
 
 // ---------------- 向导对话 ----------------
 function guideDialogKey() {
-  if (victory) return 'victory';
-  if (bossActive) return 'boss';
-  if (missionStarted) return 'ready';
+  if (storyStage >= 3 || victory) return 'victory';
+  if (storyStage === 2 || bossActive) return 'boss';
+  if (storyStage === 1 || missionStarted) return 'ready';
   return 'intro';
 }
 
@@ -1193,7 +1232,7 @@ function updateDialog(dt) {
     // 靠近向导时显示提示
     if (guideNearPlayer() && !dead) {
       talkHint = 0.12; // 保持闪烁计时（每帧重置，用于闪烁）
-      if (keys['e'] && dialogCooldown <= 0 && !victory) {
+      if (keys['e'] && dialogCooldown <= 0) {
         openDialog();
       }
     }
@@ -1225,6 +1264,66 @@ function openDialog() {
   dialogLine = 0;
   dialogTypewriter = 0;
   dialogCooldown = 0.35;
+}
+
+// ---------------- 开场/结局旁白 ----------------
+function startStory(lines) {
+  storyLines = lines;
+  storyLineIdx = 0;
+  storyTimer = 0;
+}
+function updateStory(dt) {
+  if (storyLines.length === 0) return;
+  storyTimer += dt;
+  // 每行显示约 2.6 秒后进入下一行
+  if (storyTimer > 2.6) {
+    storyTimer = 0;
+    storyLineIdx++;
+    if (storyLineIdx >= storyLines.length) {
+      storyLines = [];
+      storyLineIdx = 0;
+    }
+  }
+}
+function drawStory() {
+  if (storyLines.length === 0) return;
+  const line = storyLines[storyLineIdx];
+  const fade = Math.min(1, storyTimer / 0.5);       // 渐入
+  const fadeOut = storyTimer > 2.1 ? (3 - storyTimer) / 0.9 : 1; // 渐出
+  const alpha = Math.max(0, Math.min(1, fade, fadeOut));
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  // 半透明黑底字幕条
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  const bw = Math.min(VW * 0.8, 760);
+  const bh = 70;
+  roundRectPath(ctx, VW / 2 - bw / 2, VH - 160, bw, bh, 12);
+  ctx.fill();
+  // 文字
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 17px "Microsoft YaHei", sans-serif';
+  ctx.fillStyle = '#fff';
+  ctx.shadowColor = 'rgba(0,0,0,0.9)';
+  ctx.shadowBlur = 4;
+  wrapTextCenter(line, VW / 2, VH - 122, bw - 60, 28);
+  ctx.restore();
+}
+// 居中换行文本
+function wrapTextCenter(text, x, y, maxW, lineH) {
+  ctx.textAlign = 'center';
+  let line = '';
+  let curY = y;
+  for (const ch of text) {
+    const test = line + ch;
+    if (ctx.measureText(test).width > maxW && line) {
+      ctx.fillText(line, x, curY);
+      line = ch;
+      curY += lineH;
+    } else {
+      line = test;
+    }
+  }
+  if (line) ctx.fillText(line, x, curY);
 }
 
 // ---------------- 线虫敌人 ----------------
@@ -1410,6 +1509,7 @@ function wormHit(w, dmg) {
     sfxPurify();
     purified++;
     if (!bossActive && !victory && missionStarted && purified >= BOSS_TRIGGER) {
+      storyStage = 2;   // 进入天牛Boss阶段
       spawnBoss();
     }
   }
@@ -1649,6 +1749,8 @@ function bossDefeated() {
   bossActive = false;
   victory = true;
   victoryTimer = 3.5;
+  storyStage = 3;   // 进入胜利阶段
+  if (!outroShown) { outroShown = true; startStory(OUTRO_STORY); }  // 触发结局旁白
   sfxVictory();
 }
 
@@ -3003,6 +3105,7 @@ function frame(dt, ts) {
   updatePlayer(dt);
   updateGuide(dt);
   updateDialog(dt);
+  updateStory(dt);
   updateTools(dt);
   updateWorms(dt);
   spreadInfection(dt);   // 感染缓慢蔓延 + 感染处生成新线虫
@@ -3050,6 +3153,7 @@ function frame(dt, ts) {
   drawHpUI();
   drawObjective();
   drawDialog();
+  drawStory();
   updateHotbar();
   updateClock(s);
 }
@@ -3116,7 +3220,11 @@ async function init() {
 
     setP(1, '完成！');
     ready = true;
-    window.__debug = true; // 临时开启调试诊断
+    // 开场旁白（进入松林的背景叙述）
+    if (!introShown) {
+      introShown = true;
+      startStory(INTRO_STORY);
+    }
     setTimeout(() => {
       const lo = document.getElementById('loading');
       lo.style.opacity = '0';
