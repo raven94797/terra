@@ -60,7 +60,7 @@ const TILE_DEF = {
   [T.DIRT]:   { key: 'dirt',   name: '泥土',   hard: 0.40, img: 'assets/tiles/dirt.png' },
   [T.STONE]:  { key: 'stone',  name: '岩石',   hard: 1.05, img: 'assets/tiles/stone.png' },
   [T.WOOD]:   { key: 'wood',   name: '松木',   hard: 0.70, img: 'assets/tiles/wood.png' },
-  [T.LEAVES]: { key: 'leaves', name: '松叶',   hard: 0.18, img: 'assets/tiles/leaves.png' },
+  [T.LEAVES]: { key: 'leaves', name: '松叶',   hard: 0.18, img: 'assets/tiles/pine_leaves.png' },
   [T.SAND]:   { key: 'sand',   name: '沙地',   hard: 0.40, img: 'assets/tiles/sand.png' },
   [T.DEADPINE]: { key: 'deadpine', name: '枯黄松叶', hard: 0.12, img: 'assets/tiles/dead_pine.png' },
 };
@@ -590,40 +590,47 @@ function genWorld() {
   }
 }
 
-// 针叶松树
+// 针叶松树：笔直树干 + 3~4 层"托盘式"针叶树冠，逐层收窄成锥形，顶部尖细
 function growPine(tx, groundY) {
   const rand = mulberry32(tx * 31 + 7);
-  const h = 9 + ((rand() * 5) | 0);       // 更高
-  for (let i = 0; i < h; i++) setTile(tx, groundY - i, T.WOOD);
-  const topY = groundY - h;
-  // 针叶层：多层三角形簇
-  let layerR = 2;
-  for (let dy = 0; dy >= -4; dy--) {
-    const y = topY + dy;
-    const r = layerR;
-    for (let dx = -r; dx <= r; dx++) {
-      const x = tx + dx;
-      const cur = getTile(x, y);
-      if ((cur === T.AIR || cur === T.WOOD) && Math.abs(dx) + Math.abs(dy + 2) <= r + 1) {
-        setTile(x, y, T.LEAVES);
+  const trunk = 10 + ((rand() * 4) | 0);    // 树干更高
+  for (let i = 0; i < trunk; i++) setTile(tx, groundY - i, T.WOOD);
+  const baseY = groundY - trunk;            // 树冠底部
+  // 针叶层参数：从下往上 [半径, 层高]（托盘式：下缘平、上缘收窄）
+  const layers = [
+    { r: 3, hgt: 2 },
+    { r: 2, hgt: 2 },
+    { r: 2, hgt: 2 },
+    { r: 1, hgt: 2 },
+  ];
+  let y = baseY;
+  for (let li = 0; li < layers.length; li++) {
+    const L = layers[li];
+    const layBase = y + L.hgt - 1;          // 该层底部行
+    for (let dy = 0; dy < L.hgt; dy++) {
+      const ry = layBase - dy;              // 当前行（越往上越窄）
+      const shrink = dy === 0 ? 0 : 1;      // 每层向上缩 1 格
+      const r = Math.max(1, L.r - shrink);
+      for (let dx = -r; dx <= r; dx++) {
+        const x = tx + dx;
+        if (getTile(x, ry) === T.AIR) setTile(x, ry, T.LEAVES);
       }
     }
-    layerR = Math.min(3, layerR + (dy % 2 === 0 ? 1 : 0));
+    y -= L.hgt;
   }
-  // 树顶尖
-  setTile(tx, topY - 1, T.LEAVES);
-  setTile(tx + (rand() < 0.5 ? 1 : -1), topY, T.LEAVES);
-  setTile(tx, topY, T.LEAVES);
+  // 树顶尖（尖细锥头）
+  setTile(tx, y, T.LEAVES);
+  setTile(tx, y - 1, T.LEAVES);
+  setTile(tx + (rand() < 0.5 ? 1 : -1), y, T.LEAVES);
 
   // 部分松树一开始就已受线虫侵染：把树冠部分松叶变为枯黄(T.DEADPINE)
-  // 呼应剧情"松林已被松树线虫病侵染"
   if (rand() < 0.3) {
     const infectCount = 4 + ((rand() * 5) | 0);
     let placed = 0, guard = 0;
     while (placed < infectCount && guard < 80) {
       guard++;
       const ix = tx + Math.floor(rand() * 5) - 2;
-      const iy = topY - Math.floor(rand() * 6) - 1;
+      const iy = baseY - Math.floor(rand() * 6);
       if (getTile(ix, iy) === T.LEAVES) { setTile(ix, iy, T.DEADPINE); placed++; }
     }
   }
