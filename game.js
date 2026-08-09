@@ -94,6 +94,176 @@ const world = new Uint8Array(WORLD_W * WORLD_H);
 const surfaceH = new Int16Array(WORLD_W);
 const tex = {};
 const sprites = {};
+
+// ---------------- 松树 Sprite 部件拼装系统 ----------------
+// 离屏 sprite sheet 预绘制 → trees[] 缓存 → 按 frameX/frameY 取区拼装（非每帧重画矩形）
+const TREE_CELL = 40;              // 每个树部件显示的像素尺寸（与原来方块树大小相当）
+const TREE_TILE = 16;              // sprite sheet 图格尺寸
+// 帧索引
+const TR = {
+  TRUNK_BASE: 0, TRUNK_MID: 1, BRANCH_L: 2, BRANCH_R: 3,
+  CROWN_WIDE: 4, CROWN_MID: 5, CROWN_TIP: 6, LEAF_NOISE: 7,
+};
+const TREE_COLS = 8;
+// 两套配色：健康(绿) / 侵染枯死(枯黄)
+const TREE_PALETTE = {
+  health: {
+    trunkDark:'#5a4a38', trunkMid:'#7a6a52', trunkLight:'#9a8868', rootDark:'#4a3c2c',
+    crownDark:'#2f5e3a', crownMid:'#3f7a4a', crownLight:'#5a9a5a', crownTip:'#6fae66', snow:'#f2f6fb',
+  },
+  dead: {
+    trunkDark:'#4a3c30', trunkMid:'#5a4a3a', trunkLight:'#6a5848', rootDark:'#3a3028',
+    crownDark:'#7a5a28', crownMid:'#8f6b30', crownLight:'#a57f38', crownTip:'#b08a3a', snow:'#8a8a8a',
+  },
+};
+let treeSheet = null;              // 健康 sheet
+let deadTreeSheet = null;          // 枯黄 sheet
+const trees = [];                  // 每棵树: { gx, gy, parts:[{x,y,fx,dead}] }（x,y 为世界格，像素 = x*TILE）
+// 帧缓存
+const treeFrameCache = {};
+
+function buildTreeSheets() {
+  const mk = palette => {
+    const s = document.createElement('canvas');
+    s.width = TREE_COLS * TREE_TILE; s.height = TREE_TILE;
+    const g = s.getContext('2d'); g.imageSmoothingEnabled = false;
+    const px = (x, y, c) => { g.fillStyle = c; g.fillRect(x, y, 1, 1); };
+    const C = palette;
+    // frame0 树干基部（带根部）
+    const b0 = TR.TRUNK_BASE * TREE_TILE;
+    for (let r = 0; r < 3; r++) { px(b0+2+r,14,C.rootDark); px(b0+12-r,14,C.rootDark); px(b0+1+r,15,C.rootDark); px(b0+13-r,15,C.rootDark); }
+    px(b0+1,12,C.rootDark); px(b0+1,13,C.rootDark); px(b0+14,12,C.rootDark); px(b0+14,13,C.rootDark);
+    px(b0+0,13,C.rootDark); px(b0+15,13,C.rootDark);
+    for (let y=0;y<13;y++){ px(b0+5,y,C.trunkDark); px(b0+6,y,C.trunkMid); px(b0+7,y,C.trunkMid); px(b0+8,y,C.trunkMid); px(b0+9,y,C.trunkLight); px(b0+10,y,C.trunkDark); }
+    px(b0+6,12,C.trunkMid); px(b0+7,12,C.trunkMid); px(b0+8,12,C.trunkMid); px(b0+9,12,C.trunkMid);
+    // frame1 树干中段（可竖直平铺）
+    const b1 = TR.TRUNK_MID * TREE_TILE;
+    for (let y=0;y<TREE_TILE;y++){ px(b1+5,y,C.trunkDark); px(b1+6,y,C.trunkMid); px(b1+7,y,C.trunkMid); px(b1+8,y,C.trunkLight); px(b1+9,y,C.trunkMid); px(b1+10,y,C.trunkDark); }
+    for (let y=3;y<TREE_TILE;y+=5){ px(b1+6,y,C.trunkDark); px(b1+9,y+2,C.trunkDark); }
+    // frame2 左树枝
+    const b2 = TR.BRANCH_L * TREE_TILE;
+    for (let y=6;y<12;y++){ px(b2+7,y,C.trunkMid); px(b2+8,y,C.trunkMid); }
+    px(b2+6,7,C.trunkMid); px(b2+5,8,C.trunkMid); px(b2+4,9,C.trunkMid); px(b2+3,10,C.trunkMid); px(b2+2,11,C.trunkMid); px(b2+1,11,C.trunkMid);
+    px(b2+0,10,C.crownMid); px(b2+1,9,C.crownMid); px(b2+2,10,C.crownLight); px(b2+3,11,C.crownMid); px(b2+4,8,C.crownMid); px(b2+3,7,C.crownLight);
+    // frame3 右树枝
+    const b3 = TR.BRANCH_R * TREE_TILE;
+    for (let y=6;y<12;y++){ px(b3+7,y,C.trunkMid); px(b3+8,y,C.trunkMid); }
+    px(b3+9,7,C.trunkMid); px(b3+10,8,C.trunkMid); px(b3+11,9,C.trunkMid); px(b3+12,10,C.trunkMid); px(b3+13,11,C.trunkMid); px(b3+14,11,C.trunkMid);
+    px(b3+15,10,C.crownMid); px(b3+14,9,C.crownMid); px(b3+13,10,C.crownLight); px(b3+12,11,C.crownMid); px(b3+11,8,C.crownMid); px(b3+12,7,C.crownLight);
+    // frame4 树冠宽层
+    const b4 = TR.CROWN_WIDE * TREE_TILE;
+    for (let y=0;y<TREE_TILE;y++){ const half=2+Math.floor(y*0.6); for(let dx=-half;dx<=half;dx++){ const x=b4+8+dx; if(x<b4||x>=b4+TREE_TILE)continue; const col=y<5?C.crownDark:(y<11?C.crownMid:C.crownLight); px(x,y,col); } }
+    for (let dx=-2;dx<=2;dx++) px(b4+8+dx,14,C.snow); px(b4+8-3,14,C.snow); px(b4+8+3,14,C.snow);
+    // frame5 树冠中层
+    const b5 = TR.CROWN_MID * TREE_TILE;
+    for (let y=0;y<TREE_TILE;y++){ const half=1+Math.floor(y*0.55); for(let dx=-half;dx<=half;dx++){ const x=b5+8+dx; if(x<b5||x>=b5+TREE_TILE)continue; const col=y<5?C.crownDark:(y<11?C.crownMid:C.crownLight); px(x,y,col); } }
+    px(b5+8-2,14,C.snow); px(b5+8-1,14,C.snow); px(b5+8,14,C.snow); px(b5+8+1,14,C.snow); px(b5+8+2,14,C.snow);
+    // frame6 树冠尖塔顶
+    const b6 = TR.CROWN_TIP * TREE_TILE;
+    for (let y=0;y<TREE_TILE;y++){ const half=Math.max(0,Math.floor((TREE_TILE-y)/6)); for(let dx=-half;dx<=half;dx++){ const x=b6+8+dx; if(x<b6||x>=b6+TREE_TILE)continue; const col=y<6?C.crownLight:C.crownTip; px(x,y,col); } }
+    px(b6+8,0,C.crownTip); px(b6+8,1,C.crownTip); px(b6+8,2,C.crownTip); px(b6+7,2,C.crownTip); px(b6+9,2,C.crownTip);
+    // frame7 树叶噪点
+    const b7 = TR.LEAF_NOISE * TREE_TILE;
+    [[4,3],[5,4],[6,3],[7,4],[8,3],[9,4],[3,6],[4,7],[5,6],[6,7],[7,6],[8,7],[9,6],[10,7],[11,6],[5,9],[6,10],[7,9],[8,10],[9,9],[4,11],[5,12],[6,11],[7,12],[8,11],[9,12],[10,11],[6,13],[7,14],[8,13]].forEach(([x,y]) => px(b7+x,y,(x+y)%3===0?C.crownLight:C.crownMid));
+    px(b7+5,2,C.snow); px(b7+8,2,C.snow);
+    return s;
+  };
+  treeSheet = mk(TREE_PALETTE.health);
+  deadTreeSheet = mk(TREE_PALETTE.dead);
+}
+
+// 取一帧 canvas（缓存）
+function treeFrame(sheet, fx) {
+  const key = sheet + '_' + fx;
+  if (!treeFrameCache[key]) {
+    const c = document.createElement('canvas');
+    c.width = TREE_TILE; c.height = TREE_TILE;
+    c.getContext('2d').drawImage(sheet, fx * TREE_TILE, 0, TREE_TILE, TREE_TILE, 0, 0, TREE_TILE, TREE_TILE);
+    treeFrameCache[key] = c;
+  }
+  return treeFrameCache[key];
+}
+
+// 世界版松树生成：gx, gy 为地面格坐标（树干根底部）。写入 trees[]，同时写 1 格 WOOD 树干方块（可砍）
+function generateWorldTree(gx, gy) {
+  const rnd = mulberry32(gx * 99991 + gy * 31 + Math.floor(Math.random() * 100000));
+  const tree = { gx, gy, parts: [] };
+  const push = (x, y, fx, dead) => tree.parts.push({ x, y, fx, dead: !!dead });
+  // a. 随机树高 5~9 格
+  const trunkH = 5 + Math.floor(rnd() * 5);
+  // 树干基部 sprite + 写方块
+  push(gx, gy, TR.TRUNK_BASE);
+  setTile(gx, gy, T.WOOD);
+  for (let i = 1; i <= trunkH; i++) {
+    push(gx, gy - i, TR.TRUNK_MID);
+    if (getTile(gx, gy - i) === T.AIR) setTile(gx, gy - i, T.WOOD);
+  }
+  // 树枝（随机位置，~55% 概率）
+  const branchY = gy - 2 - Math.floor(rnd() * (trunkH - 1));
+  if (rnd() < 0.55) push(gx - 1, branchY, TR.BRANCH_L);
+  if (rnd() < 0.55) push(gx + 1, branchY, TR.BRANCH_R);
+  if (rnd() < 0.2) push(gx - 1, branchY - 1, TR.LEAF_NOISE);
+  if (rnd() < 0.2) push(gx + 1, branchY - 1, TR.LEAF_NOISE);
+  // 树冠：2~3 层尖塔
+  const crownTop = gy - trunkH - 1;
+  const crownLayers = 2 + Math.floor(rnd() * 2);
+  let cy = crownTop;
+  if (crownLayers === 3) { push(gx, cy, TR.CROWN_WIDE); cy--; push(gx, cy, TR.CROWN_MID); cy--; push(gx, cy, TR.CROWN_TIP); }
+  else { push(gx, cy, TR.CROWN_MID); cy--; push(gx, cy, TR.CROWN_TIP); }
+  if (rnd() < 0.4) push(gx - 1, crownTop, TR.LEAF_NOISE);
+  if (rnd() < 0.4) push(gx + 1, crownTop, TR.LEAF_NOISE);
+  if (rnd() < 0.3) push(gx, cy - 1, TR.LEAF_NOISE);
+  // 30% 初始侵染：随机树冠部件变枯黄
+  if (rnd() < 0.3) {
+    const count = 1 + Math.floor(rnd() * 3);
+    for (let i = 0; i < count && tree.parts.length; i++) {
+      const idx = Math.floor(rnd() * tree.parts.length);
+      const p = tree.parts[idx];
+      if (p.fx >= TR.CROWN_WIDE) p.dead = true;
+    }
+  }
+  trees.push(tree);
+}
+
+// 渲染松树层（在方块之后、实体之前）
+function drawTrees() {
+  if (!treeSheet) return;
+  const half = TREE_CELL / 2;
+  for (const tree of trees) {
+    for (const p of tree.parts) {
+      const sx = p.x * TILE - cam.x;
+      const sy = p.y * TILE - cam.y;
+      if (sx < -TREE_CELL || sx > VW || sy < -TREE_CELL || sy > VH) continue;
+      const sheet = p.dead ? deadTreeSheet : treeSheet;
+      const f = treeFrame(sheet, p.fx);
+      ctx.drawImage(f, sx, sy, TREE_CELL, TREE_CELL);
+    }
+  }
+}
+
+// 线虫侵染：把 worldX,worldY 附近松树的树冠部件标为枯黄
+function infectTreeAt(wx, wy) {
+  const gx = Math.floor(wx / TILE), gy = Math.floor(wy / TILE);
+  for (const tree of trees) {
+    for (const p of tree.parts) {
+      if (p.fx < TR.CROWN_WIDE) continue;   // 只感染树冠
+      if (Math.abs(p.x - gx) <= 3 && Math.abs(p.y - gy) <= 3) p.dead = true;
+    }
+  }
+}
+// 益生菌治愈：把 worldX,worldY 附近的枯黄树冠恢复健康
+function cureTreeAt(wx, wy) {
+  const gx = Math.floor(wx / TILE), gy = Math.floor(wy / TILE);
+  let healed = false;
+  for (const tree of trees) {
+    for (const p of tree.parts) {
+      if (p.fx < TR.CROWN_WIDE) continue;
+      if (Math.abs(p.x - gx) <= 3 && Math.abs(p.y - gy) <= 3 && p.dead) { p.dead = false; healed = true; }
+    }
+  }
+  return healed;
+}
+
 const inv = {};
 HOTBAR_ORDER.forEach(t => inv[t] = 0); // 背包：挖掘所得方块
 
@@ -562,7 +732,7 @@ function genWorld() {
     if (getTile(x, surfaceH[x]) !== T.GRASS) continue;
     if (Math.abs(surfaceH[x - 1] - surfaceH[x]) > 1 || Math.abs(surfaceH[x + 1] - surfaceH[x]) > 1) continue;
     if (noiseB.noise1(x * 0.1 + 9) < 0.56) continue;
-    growPine(x, surfaceH[x] - 1);
+    generateWorldTree(x, surfaceH[x] - 1);   // sprite 拼装松树
     lastTree = x;
   }
 
@@ -588,46 +758,6 @@ function genWorld() {
       respawn: 8 + i * 0.5,
       phase: i * 1.3,
     });
-  }
-}
-
-// 针叶松树：泰拉瑞亚风格——高大笔直树干 + 一整团饱满的圆形针叶树冠
-function growPine(tx, groundY) {
-  const rand = mulberry32(tx * 31 + 7);
-  // 高大笔直的棕色树干
-  const trunk = 20 + ((rand() * 6) | 0);   // 树干 20~25 格（很挺拔）
-  for (let i = 0; i < trunk; i++) setTile(tx, groundY - i, T.WOOD);
-  // 树冠：单一饱满的圆形/椭圆形（参考泰拉瑞亚松树）
-  const crownCenterY = groundY - trunk + 4;  // 树冠中心位置（树干上部）
-  const rx = 4 + ((rand() * 2) | 0);         // 树冠水平半径（4~5 格）
-  const ry = 3 + ((rand() * 2) | 0);         // 树冠垂直半径（3~4 格，略扁）
-  // 用椭圆距离公式填充树冠
-  for (let dy = -ry; dy <= ry; dy++) {
-    for (let dx = -rx; dx <= rx; dx++) {
-      // 椭圆距离（d<=1 为内部）；轻微噪声扰动让边缘不太规则
-      const d2 = (dx * dx) / (rx * rx) + (dy * dy) / (ry * ry);
-      if (d2 <= 1) {
-        const x = tx + dx, y = crownCenterY + dy;
-        if (getTile(x, y) === T.AIR) setTile(x, y, T.LEAVES);
-      }
-    }
-  }
-  // 树冠顶部小尖（最上一格的中央）
-  setTile(tx, crownCenterY - ry - 1, T.LEAVES);
-
-  // 部分松树一开始就已受线虫侵染：把树冠部分松叶变为枯黄(T.DEADPINE)
-  if (rand() < 0.3) {
-    const infectCount = 6 + ((rand() * 8) | 0);
-    let placed = 0, guard = 0;
-    while (placed < infectCount && guard < 200) {
-      guard++;
-      // 在树冠椭圆范围内随机选点
-      const angle = rand() * Math.PI * 2;
-      const r = Math.sqrt(rand()) * 0.95;     // 椭圆内均匀分布
-      const ix = tx + Math.round(Math.cos(angle) * rx * r);
-      const iy = crownCenterY + Math.round(Math.sin(angle) * ry * r);
-      if (getTile(ix, iy) === T.LEAVES) { setTile(ix, iy, T.DEADPINE); placed++; }
-    }
   }
 }
 
@@ -1124,6 +1254,8 @@ function wormInfect(w) {
       }
     }
   }
+  // 让 sprite 松树树冠也变枯黄（线虫侵染视觉表现）
+  infectTreeAt(w.cx, w.cy);
 }
 
 function wormHit(w, dmg) {
@@ -1430,11 +1562,15 @@ function updateProbioticShots(dt) {
       bossHit(25);
       used = true;
     }
-    // 益生菌治愈枯黄松叶：把命中位置的枯黄松叶(T.DEADPINE)恢复为健康松叶(T.LEAVES)
+    // 益生菌治愈：既恢复枯黄松叶方块，也治愈 sprite 松树树冠
     if (!used) {
       const htx = Math.floor(s.x / TILE), hty = Math.floor(s.y / TILE);
+      let healed = cureTreeAt(s.x, s.y);   // 治愈 sprite 树冠（枯黄→健康）
       if (getTile(htx, hty) === T.DEADPINE) {
         setTile(htx, hty, T.LEAVES);
+        healed = true;
+      }
+      if (healed) {
         used = true;
         // 治愈粒子（绿色恢复光芒）
         for (let j = 0; j < 8; j++) {
@@ -2747,6 +2883,7 @@ function frame(dt, ts) {
   drawMountains();
   drawClouds(dt);
   drawTiles();
+  drawTrees();          // 松树 sprite 拼装层
   drawWorms();
   drawLongicorn();
   drawBossShots();
@@ -2816,6 +2953,7 @@ async function init() {
     sprites.mountains = removeWhiteBG(mImg);
 
     await new Promise(r => setTimeout(r, 30));
+    buildTreeSheets();      // 预绘制松树 sprite sheet（健康/枯黄）
     genWorld();
     initSky();
     buildHotbar();
