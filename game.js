@@ -1310,7 +1310,8 @@ function updateWorms(dt) {
   }
 }
 
-// 线虫侵染松树：线虫接近树木根部（树干WOOD）时，感染该树的树叶使其枯萎
+// 线虫侵染松树：线虫接近树木根部（树干WOOD）时，在树根附近感染一小片树叶（感染起始点）
+// 感染会随时间逐渐向相邻树叶蔓延（见 spreadInfection）
 function wormInfect(w) {
   const cx = Math.floor(w.cx / TILE), cy = Math.floor(w.cy / TILE);
   // 检查以线虫为中心 5x5 范围内是否有树干（树根）
@@ -1318,28 +1319,47 @@ function wormInfect(w) {
     for (let dx = -2; dx <= 2; dx++) {
       const tx = cx + dx, ty = cy + dy;
       if (getTile(tx, ty) === T.WOOD) {
-        // 找到树干：从根部向上遍历整棵树，把树冠松叶变枯黄
-        infectTreeFromRoot(tx, ty);
+        // 在树根附近找一片健康树叶作为感染起始点
+        const leafX = tx + (Math.random() < 0.5 ? -1 : 1) * (1 + Math.floor(Math.random() * 3));
+        const leafY = ty - 1 - Math.floor(Math.random() * 3);
+        if (getTile(leafX, leafY) === T.LEAVES) {
+          setTile(leafX, leafY, T.DEADPINE);
+        }
+        return; // 每帧只感染一次，避免一次性大片
       }
     }
   }
 }
 
-// 从树干某格开始，向上把该树的松叶全部变枯黄（感染树冠）
-function infectTreeFromRoot(rx, ry) {
-  // 先向下找到树的最底部根
-  let rootY = ry;
-  while (getTile(rx, rootY - 1) === T.WOOD) rootY--;
-  // 从根向上扫描整个树干范围，把其上的 LEAVES 变为 DEADPINE
-  for (let ty = rootY - 1; ty >= rootY - 40; ty--) {
-    // 该高度行附近的树叶（树干左右各 4 格）
-    for (let dx = -4; dx <= 4; dx++) {
-      const v = getTile(rx + dx, ty);
-      if (v === T.LEAVES) setTile(rx + dx, ty, T.DEADPINE);
+// 感染缓慢蔓延：枯黄树叶逐渐向相邻的健康树叶扩散（病害蔓延感）
+// 只扫描玩家附近区域（性能优化），感染蔓延 + 感染处生成新线虫
+function spreadInfection(dt) {
+  const pcx = Math.floor(player.cx / TILE), pcy = Math.floor(player.cy / TILE);
+  const RADIUS = 60;   // 只处理玩家周围 60 格（视口+缓冲）
+  const x0 = clamp(pcx - RADIUS, 0, WORLD_W - 1);
+  const x1 = clamp(pcx + RADIUS, 0, WORLD_W - 1);
+  const y0 = clamp(pcy - RADIUS, 0, WORLD_H - 1);
+  const y1 = clamp(pcy + RADIUS, 0, WORLD_H - 1);
+  const candidates = [];
+  for (let ty = y0; ty <= y1; ty++) {
+    for (let tx = x0; tx <= x1; tx++) {
+      if (getTile(tx, ty) === T.DEADPINE) candidates.push([tx, ty]);
     }
-    // 若上面不再是树叶/树干（树冠结束）则停止
-    const above = getTile(rx, ty - 1);
-    if (above !== T.LEAVES && above !== T.DEADPINE && above !== T.WOOD && ty < ry) break;
+  }
+  // 感染蔓延：枯黄树叶概率感染相邻健康树叶（缓慢扩散）
+  const maxProcess = Math.min(candidates.length, 300);
+  for (let i = 0; i < maxProcess; i++) {
+    const [tx, ty] = candidates[i];
+    for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+      if (getTile(tx + dx, ty + dy) === T.LEAVES && Math.random() < dt * 0.7) {
+        setTile(tx + dx, ty + dy, T.DEADPINE);
+      }
+    }
+  }
+  // 从感染树叶中生成新线虫（感染扩散带来新的虫源）
+  if (candidates.length > 0 && Math.random() < dt * 0.1 && WORMS.length < MAX_WORMS + 4) {
+    const [tx, ty] = candidates[(Math.random() * candidates.length) | 0];
+    spawnWorm(tx * TILE + TILE / 2, ty * TILE + TILE);
   }
 }
 
@@ -1664,27 +1684,34 @@ function updateProbioticShots(dt) {
       bossHit(25);
       used = true;
     }
-    // 益生菌治愈枯黄松叶：把命中位置的枯黄松叶(T.DEADPINE)恢复为健康松叶(T.LEAVES)
+    // 益生菌治愈：恢复命中的枯黄松叶(T.DEADPINE)为健康(T.LEAVES)，并连锁治愈相邻 3×3 的枯黄树叶
     if (!used) {
       const htx = Math.floor(s.x / TILE), hty = Math.floor(s.y / TILE);
-      if (getTile(htx, hty) === T.DEADPINE) {
-        setTile(htx, hty, T.LEAVES);
-        used = true;
-        // 治愈粒子（绿色恢复光芒）
-        for (let j = 0; j < 8; j++) {
-          particles.push({
-            x: s.x + (Math.random() - 0.5) * TILE,
-            y: s.y + (Math.random() - 0.5) * TILE,
-            vx: (Math.random() - 0.5) * 3,
-            vy: -Math.random() * 3 - 0.5,
-            life: 0.5 + Math.random() * 0.4,
-            t: 0,
-            color: Math.random() < 0.5 ? '#9ae66a' : '#d7ffb0',
-            size: 3 + Math.random() * 3,
-            spin: 0, rot: 0, rect: true,
-          });
+      let healedAny = false;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const tx = htx + dx, ty = hty + dy;
+          if (getTile(tx, ty) === T.DEADPINE) {
+            setTile(tx, ty, T.LEAVES);
+            healedAny = true;
+            // 治愈粒子（绿色恢复光芒）
+            for (let j = 0; j < 4; j++) {
+              particles.push({
+                x: (tx + 0.5) * TILE + (Math.random() - 0.5) * TILE * 0.6,
+                y: (ty + 0.5) * TILE + (Math.random() - 0.5) * TILE * 0.6,
+                vx: (Math.random() - 0.5) * 3,
+                vy: -Math.random() * 3 - 0.5,
+                life: 0.5 + Math.random() * 0.4,
+                t: 0,
+                color: Math.random() < 0.5 ? '#9ae66a' : '#d7ffb0',
+                size: 3 + Math.random() * 3,
+                spin: 0, rot: 0, rect: true,
+              });
+            }
+          }
         }
       }
+      if (healedAny) used = true;
     }
     if (used) {
       // 净化粒子
@@ -2960,6 +2987,7 @@ function frame(dt, ts) {
   updateDialog(dt);
   updateTools(dt);
   updateWorms(dt);
+  spreadInfection(dt);   // 感染缓慢蔓延 + 感染处生成新线虫
   updateBoss(dt);
   updateDrone(dt);
   updateGuardDrone(dt);
