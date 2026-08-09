@@ -399,7 +399,7 @@ function removeWhiteKeepSize(c) {
   g.putImageData(id, 0, 0);
 }
 function removeBossBG(img) {
-  // 纯品红(#ff00ff)色键：保留所有非品红像素，绝不误删暖色主体
+  // 品红(#ff00ff)色键 + 洪水填充：去掉背景及抗锯齿边缘的紫红晕边
   const w = img.width, h = img.height;
   const c = document.createElement('canvas');
   c.width = w; c.height = h;
@@ -407,10 +407,29 @@ function removeBossBG(img) {
   g.drawImage(img, 0, 0);
   const id = g.getImageData(0, 0, w, h);
   const d = id.data;
-  for (let i = 0; i < w * h; i++) {
+  // 品红判定（含抗锯齿边缘）：R 与 B 都高，G 明显偏低 → 紫红背景
+  const isMagenta = i => {
     const r = d[i * 4], gg = d[i * 4 + 1], b = d[i * 4 + 2];
-    // 品红色键：R 高且 G/B 接近 0（保留 magenta = r>200 && gg<80 && b>200）
-    if (r > 180 && gg < 100 && b > 180) d[i * 4 + 3] = 0;
+    // 天牛主体是暖色（橙/棕/红），其特征是 B 低；品红背景 B 高。
+    // 判断：R>130 且 B>130 且 G < R-50 且 G < B-50（纯品红 & 边缘紫红）
+    if (r < 130 || b < 130) return false;
+    return gg < r - 50 && gg < b - 50;
+  };
+  // 洪水填充：从四边向内，删除与边缘连通的品红区域（含抗锯齿过渡像素）
+  const visited = new Uint8Array(w * h);
+  const stack = [];
+  for (let x = 0; x < w; x++) { stack.push(x); stack.push((h - 1) * w + x); }
+  for (let y = 0; y < h; y++) { stack.push(y * w); stack.push(y * w + w - 1); }
+  while (stack.length) {
+    const i = stack.pop();
+    if (visited[i] || !isMagenta(i)) continue;
+    visited[i] = 1;
+    d[i * 4 + 3] = 0;
+    const x = i % w, y = (i / w) | 0;
+    if (x > 0 && !visited[i - 1]) stack.push(i - 1);
+    if (x < w - 1 && !visited[i + 1]) stack.push(i + 1);
+    if (y > 0 && !visited[i - w]) stack.push(i - w);
+    if (y < h - 1 && !visited[i + w]) stack.push(i + w);
   }
   g.putImageData(id, 0, 0);
   // 裁剪到非透明主体
