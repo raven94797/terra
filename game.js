@@ -3016,6 +3016,7 @@ function frame(dt, ts) {
   timeOfDay = (timeOfDay + dt / DAY_LENGTH) % 1;
   bossAlertShown = Math.max(0, bossAlertShown - dt);
   shake = Math.max(0, shake - dt * 1.6);
+  invuln = Math.max(0, invuln - dt);   // 无敌时间每帧递减（修复无法连续受伤的bug）
 
   updatePlayer(dt);
   updateGuide(dt);
